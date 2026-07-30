@@ -10,6 +10,7 @@ const templates: Array<{ value: BaseTemplate; label: string }> = [
 ]
 
 interface WorkbenchHeaderProps {
+  appVersion: string
   previewMode: PreviewMode
   template: BaseTemplate
   onPreviewModeChange: (mode: PreviewMode) => void
@@ -22,6 +23,7 @@ interface WorkbenchHeaderProps {
 }
 
 export function WorkbenchHeader({
+  appVersion,
   previewMode,
   template,
   onPreviewModeChange,
@@ -130,6 +132,7 @@ export function WorkbenchHeader({
           <ImageUp className="h-3.5 w-3.5" />
           上传图片或导入 DXF 即可开始
         </div>
+        <div className="rounded-full bg-slate-100 px-3 py-1.5">当前版本 v{appVersion}</div>
         <div className="rounded-full bg-slate-100 px-3 py-1.5">桌面优先工作台</div>
         <div className="rounded-full bg-slate-100 px-3 py-1.5">纯色扁平界面</div>
         <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5">

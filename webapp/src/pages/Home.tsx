@@ -428,6 +428,7 @@ export default function Home() {
     <main className="min-h-screen bg-app px-4 py-6 text-slate-900 lg:px-6 xl:px-8">
       <div className="mx-auto max-w-[1680px] space-y-6">
         <WorkbenchHeader
+          appVersion={__APP_VERSION__}
           previewMode={previewMode}
           template={baseplateSettings.template}
           onPreviewModeChange={setPreviewMode}

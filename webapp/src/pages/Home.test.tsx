@@ -53,5 +53,6 @@ describe('Home', () => {
     expect(screen.getByText('打印盘与单 3MF 摆盘')).toBeTruthy()
     expect(screen.getByText('恢复默认配置')).toBeTruthy()
     expect(screen.getByText('上传 3MF 打印参数')).toBeTruthy()
+    expect(screen.getByText('当前版本 v0.0.0')).toBeTruthy()
   })
 })
