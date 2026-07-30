@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/
+
+webapp/node_modules/
+webapp/dist/
+webapp/tmp/
+webapp/.vite/
+webapp/coverage/

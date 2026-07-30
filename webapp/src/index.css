@@ -1,0 +1,62 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #0f172a;
+  background:
+    radial-gradient(circle at top left, rgba(123, 185, 231, 0.14), transparent 24%),
+    radial-gradient(circle at top right, rgba(255, 243, 237, 0.28), transparent 18%),
+    #edf3f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1280px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: 'Noto Sans SC', sans-serif;
+}
+
+.bg-app {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(243, 246, 251, 0.88)),
+    radial-gradient(circle at top left, rgba(123, 185, 231, 0.2), transparent 28%),
+    #edf3f8;
+}
+
+.bg-checker {
+  background-color: #eef2f7;
+  background-image:
+    linear-gradient(45deg, rgba(203, 213, 225, 0.45) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(203, 213, 225, 0.45) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(203, 213, 225, 0.45) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(203, 213, 225, 0.45) 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
