@@ -1,4 +1,4 @@
-import { Download, Eye, FileArchive, ImageUp, Layers3, Shapes } from 'lucide-react'
+import { Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes } from 'lucide-react'
 import type { BaseTemplate, PreviewMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
@@ -17,6 +17,7 @@ interface WorkbenchHeaderProps {
   onExportJson: () => void
   onExportPreview: () => void
   onExport3mf: () => void
+  onResetSettings: () => void
   canExport: boolean
 }
 
@@ -28,6 +29,7 @@ export function WorkbenchHeader({
   onExportJson,
   onExportPreview,
   onExport3mf,
+  onResetSettings,
   canExport,
 }: WorkbenchHeaderProps) {
   return (
@@ -84,6 +86,14 @@ export function WorkbenchHeader({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onResetSettings}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+            >
+              <RotateCcw className="h-4 w-4" />
+              恢复默认配置
+            </button>
             <button
               type="button"
               onClick={onExportPreview}

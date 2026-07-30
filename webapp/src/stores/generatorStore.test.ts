@@ -12,6 +12,9 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(160)
     expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(0.4)
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
+    expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
+    expect(useGeneratorStore.getState().customThreeMfProfile).toBeNull()
   })
 
   it('saves updated settings into localStorage', async () => {
@@ -45,6 +48,29 @@ describe('useGeneratorStore persistence', () => {
       extrudeSettings: {
         baseThicknessMm: 0.3,
       },
+      printBedSettings: {
+        widthMm: 300,
+        spacingMm: 12,
+      },
+      customThreeMfProfile: {
+        sourceName: 'custom.3mf',
+        applicationName: 'BambuStudio-02.07.01.62',
+        projectSettings: {
+          printer_model: 'Bambu Lab A1',
+          printable_area: ['0x0', '300x0', '300x256', '0x256'],
+        },
+        sliceInfoConfig: '<config />',
+        filamentSequenceJson: '{"plate_1":{"sequence":[]}}',
+        printBedWidthMm: 300,
+        printBedDepthMm: 256,
+        printerModel: 'Bambu Lab A1',
+        printerVariant: '0.4',
+        printerSettingsId: 'Bambu Lab A1 0.4 nozzle',
+        printSettingsId: '0.20mm Standard @BBL A1',
+        bedType: 'Textured PEI Plate',
+        compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
+        filamentSlotCount: 2,
+      },
     }))
 
     const { useGeneratorStore } = await import('@/stores/generatorStore')
@@ -58,5 +84,44 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().baseplateSettings.heightMm).toBe(50)
     expect(useGeneratorStore.getState().extrudeSettings.baseThicknessMm).toBe(0.3)
     expect(useGeneratorStore.getState().extrudeSettings.lineThicknessMm).toBe(0.2)
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(300)
+    expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
+    expect(useGeneratorStore.getState().printBedSettings.spacingMm).toBe(12)
+    expect(useGeneratorStore.getState().customThreeMfProfile?.sourceName).toBe('custom.3mf')
+  })
+
+  it('resets settings back to defaults and clears custom 3mf profile', async () => {
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    useGeneratorStore.getState().setCustomThreeMfProfile({
+      sourceName: 'custom.3mf',
+      applicationName: 'BambuStudio-02.07.01.62',
+      projectSettings: {},
+      sliceInfoConfig: '<config />',
+      filamentSequenceJson: null,
+      printBedWidthMm: 300,
+      printBedDepthMm: 256,
+      printerModel: 'Bambu Lab A1',
+      printerVariant: '0.4',
+      printerSettingsId: 'Bambu Lab A1 0.4 nozzle',
+      printSettingsId: '0.20mm Standard @BBL A1',
+      bedType: 'Textured PEI Plate',
+      compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
+      filamentSlotCount: 2,
+    })
+    useGeneratorStore.getState().updatePrintBedSettings({
+      widthMm: 300,
+      depthMm: 280,
+    })
+
+    useGeneratorStore.getState().resetAllSettings({
+      widthMm: 256,
+      depthMm: 256,
+    })
+
+    expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
+    expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
+    expect(useGeneratorStore.getState().customThreeMfProfile).toBeNull()
   })
 })

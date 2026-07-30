@@ -1,4 +1,4 @@
-import { Box, Ruler, Wand2 } from 'lucide-react'
+import { Ruler } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ExtrudeSettings } from '@/types/generator'
 
@@ -58,8 +58,6 @@ function SliderField({
 }
 
 export function ThicknessPanel({ settings, onUpdateSettings }: ThicknessPanelProps) {
-  const totalModelHeight = settings.lineHeightMm + settings.lineThicknessMm
-
   return (
     <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_18px_60px_rgba(15,23,42,0.05)]">
       <div>
@@ -94,34 +92,14 @@ export function ThicknessPanel({ settings, onUpdateSettings }: ThicknessPanelPro
         />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-4">
-          <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
-            <Box className="h-4 w-4" />
-            当前默认
-          </div>
-          <p className="mt-2 text-xs leading-6 text-slate-500">
-            默认是底板 `0-0.2 mm`，线稿 `0.2-0.4 mm`。也就是底板厚度 0.2 mm、线稿高度 0.2 mm、线稿厚度 0.2 mm。
-          </p>
+      <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-4">
+        <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
+          <Ruler className="h-4 w-4" />
+          尺寸逻辑
         </div>
-        <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-4">
-          <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
-            <Ruler className="h-4 w-4" />
-            尺寸逻辑
-          </div>
-          <p className="mt-2 text-xs leading-6 text-slate-500">
-            线稿高度表示线稿层从模型底部开始的高度位置，线稿厚度表示这层本身再向上长多少。
-          </p>
-        </div>
-        <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-4">
-          <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
-            <Wand2 className="h-4 w-4" />
-            实用建议
-          </div>
-          <p className="mt-2 text-xs leading-6 text-slate-500">
-            当前模型最高点是 `线稿高度 + 线稿厚度 = {totalModelHeight.toFixed(2)} mm`。如果你想让线稿更粗，请改左侧“线条宽度”，不是这里的“线稿厚度”。
-          </p>
-        </div>
+        <p className="mt-2 text-xs leading-6 text-slate-500">
+          线稿高度表示线稿层从模型底部开始的高度位置，线稿厚度表示这层本身再向上长多少。当前模型最高点会按 `线稿高度 + 线稿厚度` 计算。
+        </p>
       </div>
     </section>
   )

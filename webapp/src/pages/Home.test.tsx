@@ -34,6 +34,11 @@ describe('Home', () => {
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
       },
+      printBedSettings: {
+        widthMm: 256,
+        depthMm: 256,
+        spacingMm: 8,
+      },
     })
   })
 
@@ -45,5 +50,8 @@ describe('Home', () => {
     expect(screen.getByText('目标颜色')).toBeTruthy()
     expect(screen.getByText('水平镜像')).toBeTruthy()
     expect(screen.getByText('底板模板与颜色')).toBeTruthy()
+    expect(screen.getByText('打印盘与单 3MF 摆盘')).toBeTruthy()
+    expect(screen.getByText('恢复默认配置')).toBeTruthy()
+    expect(screen.getByText('上传 3MF 打印参数')).toBeTruthy()
   })
 })

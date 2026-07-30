@@ -69,6 +69,29 @@ export interface ExtrudeSettings {
   lineHeightMm: number
 }
 
+export interface PrintBedSettings {
+  widthMm: number
+  depthMm: number
+  spacingMm: number
+}
+
+export interface ThreeMfTemplateProfile {
+  sourceName: string
+  applicationName: string
+  projectSettings: Record<string, unknown>
+  sliceInfoConfig: string
+  filamentSequenceJson: string | null
+  printBedWidthMm: number
+  printBedDepthMm: number
+  printerModel: string
+  printerVariant: string
+  printerSettingsId: string
+  printSettingsId: string
+  bedType: string
+  compatiblePrinters: string[]
+  filamentSlotCount: number
+}
+
 export interface PreviewAssets {
   lineartDataUrl: string
   baseplateDataUrl: string
@@ -98,4 +121,39 @@ export interface ProcessedArtwork {
   pixelsPerMm: number
   previews: PreviewAssets
   stats: GeometryStats
+}
+
+export interface PrintBedPlacementItem {
+  id: string
+  label: string
+  widthMm: number
+  heightMm: number
+  previewDataUrl?: string
+}
+
+export interface PrintBedPlacement {
+  id: string
+  label: string
+  xMm: number
+  yMm: number
+  widthMm: number
+  heightMm: number
+  previewDataUrl?: string
+  fits: boolean
+  plateIndex: number
+}
+
+export interface PrintBedPlate {
+  plateIndex: number
+  placements: PrintBedPlacement[]
+}
+
+export interface PrintBedLayout {
+  widthMm: number
+  depthMm: number
+  spacingMm: number
+  edgeMarginMm: number
+  plates: PrintBedPlate[]
+  placements: PrintBedPlacement[]
+  overflowCount: number
 }

@@ -5,12 +5,21 @@ import type {
   GifFrameSource,
   ImportedLineart,
   LineartSettings,
+  PrintBedLayout,
+  PrintBedPlacementItem,
+  PrintBedSettings,
   ProcessedArtwork,
   SourceImage,
+  ThreeMfTemplateProfile,
   VectorLoop,
   VectorPoint,
 } from '@/types/generator'
 import { clamp, colorDistance, hexToRgb } from '@/utils/color'
+import {
+  buildThreeMfFilamentSequenceJson,
+  buildThreeMfProjectSettingsConfig,
+  buildThreeMfSliceInfoConfig,
+} from '@/utils/threeMfProfile'
 
 const DEFAULT_LINEART_MAX_MM = 40
 const PREVIEW_MAX_PX = 900
@@ -49,6 +58,11 @@ interface BambuModelSettingsObject {
     name: string
     extruder: number
   }>
+}
+
+interface BambuPlateAssignment {
+  plateIndex: number
+  objectIds: number[]
 }
 
 export async function fileToSourceImage(file: File): Promise<SourceImage> {
@@ -252,8 +266,10 @@ export function export3mf(
   artwork: ProcessedArtwork,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
 ) {
-  const bytes = build3mfPackage(artwork, baseplateSettings, extrudeSettings)
+  const bytes = build3mfPackage(artwork, baseplateSettings, extrudeSettings, printBedSettings, threeMfProfile)
   downloadBlob(filename, new Blob([bytes], { type: 'model/3mf' }))
 }
 
@@ -422,6 +438,8 @@ export function build3mfPackage(
   artwork: ProcessedArtwork,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
 ) {
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
@@ -440,7 +458,8 @@ export function build3mfPackage(
     extrudeSettings.lineThicknessMm,
     MIN_EXPORTABLE_LINE_WIDTH_MM,
   )
-  const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings)
+  const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
+  const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -463,8 +482,13 @@ export function build3mfPackage(
         { id: 3, name: '线稿', extruder: 2 },
       ],
     },
-  ])
-  const projectSettings = buildBambuProjectSettingsConfig(baseplateSettings)
+  ], [{
+    plateIndex: 0,
+    objectIds: [4],
+  }])
+  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+  const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
+  const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
 
   return zipSync({
     '[Content_Types].xml': strToU8(contentTypes),
@@ -472,16 +496,21 @@ export function build3mfPackage(
     '3D/3dmodel.model': strToU8(modelXml),
     'Metadata/model_settings.config': strToU8(modelSettings),
     'Metadata/project_settings.config': strToU8(projectSettings),
+    'Metadata/slice_info.config': strToU8(sliceInfoConfig),
+    'Metadata/filament_sequence.json': strToU8(filamentSequence),
   }, { level: 0 })
 }
 
 export function buildCombined3mfPackage(
   items: Array<{
+    id: string
     name: string
     artwork: ProcessedArtwork
   }>,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
 ) {
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -498,11 +527,19 @@ export function buildCombined3mfPackage(
   ].join('\n')
   const baseColor = `${baseplateSettings.baseColor.toUpperCase()}FF`
   const lineColor = `${baseplateSettings.lineColor.toUpperCase()}FF`
-  const gapMm = 8
-  let cursorX = 0
-  let cursorY = 0
-  let rowMaxHeight = 0
-  const maxColumns = Math.max(1, Math.ceil(Math.sqrt(items.length)))
+  const printBedLayout = planPrintBedLayout(
+    items.map((item) => ({
+      id: item.id,
+      label: item.name,
+      widthMm: item.artwork.boardWidthMm,
+      heightMm: item.artwork.boardHeightMm,
+      previewDataUrl: item.artwork.previews.compositeDataUrl,
+    })),
+    printBedSettings,
+  )
+  if (printBedLayout.overflowCount > 0) {
+    throw new Error('存在单个素材尺寸超过打印盘可用范围，请增大打印盘尺寸或缩小底板。')
+  }
   const resourceLines: string[] = [
     '    <basematerials id="1">',
     `      <base name="底板" displaycolor="${baseColor}"/>`,
@@ -512,15 +549,21 @@ export function buildCombined3mfPackage(
   const buildLines: string[] = []
   let nextObjectId = 2
   const modelSettingsObjects: BambuModelSettingsObject[] = []
+  const plateAssignments = new Map<number, number[]>()
+  const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
 
-  items.forEach((item, index) => {
+  items.forEach((item) => {
+    const placement = printBedLayout.placements.find((entry) => entry.id === item.id)
+    if (!placement) {
+      throw new Error(`缺少素材 ${item.name} 的摆盘位置`)
+    }
     const flippedBaseLoops = flipLoopsForModelExport(item.artwork.baseLoops, item.artwork.boardHeightMm)
     const flippedLineLoops = flipLoopsForModelExport(item.artwork.lineLoops, item.artwork.boardHeightMm)
     const lineMeshPixelsPerMm = clamp(Math.max(item.artwork.pixelsPerMm, 10), 8, 20)
     const placedBaseMesh = translateMesh(
       extrudeLoopsToMesh(keepOuterLoops(flippedBaseLoops), 0, extrudeSettings.baseThicknessMm),
-      cursorX,
-      cursorY,
+      placement.xMm,
+      placement.yMm,
     )
     const placedLineMesh = translateMesh(
       extrudeMaskToMesh(
@@ -532,8 +575,8 @@ export function buildCombined3mfPackage(
         extrudeSettings.lineThicknessMm,
         MIN_EXPORTABLE_LINE_WIDTH_MM,
       ),
-      cursorX,
-      cursorY,
+      placement.xMm,
+      placement.yMm,
     )
     const baseObjectId = nextObjectId
     const lineObjectId = nextObjectId + 1
@@ -552,21 +595,15 @@ export function buildCombined3mfPackage(
         { id: lineObjectId, name: `${item.name}-线稿`, extruder: 2 },
       ],
     })
-
-    rowMaxHeight = Math.max(rowMaxHeight, item.artwork.boardHeightMm)
-    if ((index + 1) % maxColumns === 0) {
-      cursorX = 0
-      cursorY += rowMaxHeight + gapMm
-      rowMaxHeight = 0
-    } else {
-      cursorX += item.artwork.boardWidthMm + gapMm
-    }
+    const currentPlateObjectIds = plateAssignments.get(placement.plateIndex) ?? []
+    currentPlateObjectIds.push(compositeObjectId)
+    plateAssignments.set(placement.plateIndex, currentPlateObjectIds)
   })
 
   const modelXml = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
-    '  <metadata name="Application">BambuStudio-01.10.00.89</metadata>',
+    `  <metadata name="Application">${applicationName}</metadata>`,
     '  <metadata name="Designer">线稿底板生成器</metadata>',
     '  <metadata name="Title">线稿底板批量 3MF</metadata>',
     '  <resources>',
@@ -577,8 +614,15 @@ export function buildCombined3mfPackage(
     '  </build>',
     '</model>',
   ].join('\n')
-  const modelSettings = buildBambuModelSettingsConfig(modelSettingsObjects)
-  const projectSettings = buildBambuProjectSettingsConfig(baseplateSettings)
+  const modelSettings = buildBambuModelSettingsConfig(
+    modelSettingsObjects,
+    Array.from(plateAssignments.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([plateIndex, objectIds]) => ({ plateIndex, objectIds })),
+  )
+  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+  const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
+  const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, printBedLayout.plates.length)
 
   return zipSync({
     '[Content_Types].xml': strToU8(contentTypes),
@@ -586,10 +630,17 @@ export function buildCombined3mfPackage(
     '3D/3dmodel.model': strToU8(modelXml),
     'Metadata/model_settings.config': strToU8(modelSettings),
     'Metadata/project_settings.config': strToU8(projectSettings),
+    'Metadata/slice_info.config': strToU8(sliceInfoConfig),
+    'Metadata/filament_sequence.json': strToU8(filamentSequence),
   }, { level: 0 })
 }
 
-export function build3mfModelXml(baseMesh: MeshData, lineMesh: MeshData, settings: BaseplateSettings) {
+export function build3mfModelXml(
+  baseMesh: MeshData,
+  lineMesh: MeshData,
+  settings: BaseplateSettings,
+  applicationName = 'BambuStudio-01.10.00.89',
+) {
   const baseColor = `${settings.baseColor.toUpperCase()}FF`
   const lineColor = `${settings.lineColor.toUpperCase()}FF`
   const baseObjectId = 2
@@ -599,7 +650,7 @@ export function build3mfModelXml(baseMesh: MeshData, lineMesh: MeshData, setting
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
-    '  <metadata name="Application">BambuStudio-01.10.00.89</metadata>',
+    `  <metadata name="Application">${applicationName}</metadata>`,
     '  <metadata name="Designer">线稿底板生成器</metadata>',
     '  <metadata name="Title">线稿底板 3MF</metadata>',
     '  <resources>',
@@ -650,6 +701,150 @@ export function layoutLineLoops(
     boardWidthMm,
     boardHeightMm,
     lineLoops: translateLoops(scaled, offsetX, offsetY),
+  }
+}
+
+export function planPrintBedLayout(
+  items: PrintBedPlacementItem[],
+  settings: PrintBedSettings,
+): PrintBedLayout {
+  const widthMm = Math.max(10, settings.widthMm)
+  const depthMm = Math.max(10, settings.depthMm)
+  const spacingMm = Math.max(0, settings.spacingMm)
+  const edgeMarginMm = Math.max(4, spacingMm * 0.5)
+
+  if (!items.length) {
+    return {
+      widthMm,
+      depthMm,
+      spacingMm,
+      edgeMarginMm,
+      plates: [],
+      placements: [],
+      overflowCount: 0,
+    }
+  }
+
+  if (items.length === 1) {
+    const [item] = items
+    const xMm = (widthMm - item.widthMm) * 0.5
+    const yMm = (depthMm - item.heightMm) * 0.5
+    const fits = xMm >= 0 && yMm >= 0
+
+    return {
+      widthMm,
+      depthMm,
+      spacingMm,
+      edgeMarginMm,
+      plates: [{
+        plateIndex: 0,
+        placements: [{
+          id: item.id,
+          label: item.label,
+          xMm,
+          yMm,
+          widthMm: item.widthMm,
+          heightMm: item.heightMm,
+          previewDataUrl: item.previewDataUrl,
+          fits,
+          plateIndex: 0,
+        }],
+      }],
+      placements: [{
+        id: item.id,
+        label: item.label,
+        xMm,
+        yMm,
+        widthMm: item.widthMm,
+        heightMm: item.heightMm,
+        previewDataUrl: item.previewDataUrl,
+        fits,
+        plateIndex: 0,
+      }],
+      overflowCount: fits ? 0 : 1,
+    }
+  }
+
+  const placements: PrintBedLayout['placements'] = []
+  const usableWidthMm = Math.max(0, widthMm - edgeMarginMm * 2)
+  const usableDepthMm = Math.max(0, depthMm - edgeMarginMm * 2)
+  const plates: PrintBedLayout['plates'] = []
+  let overflowCount = 0
+
+  const createPlateCursor = (plateIndex: number) => ({
+    plateIndex,
+    cursorX: edgeMarginMm,
+    cursorY: edgeMarginMm,
+    rowMaxHeight: 0,
+    placements: [] as PrintBedLayout['placements'],
+  })
+
+  let currentPlate = createPlateCursor(0)
+  plates.push({
+    plateIndex: currentPlate.plateIndex,
+    placements: currentPlate.placements,
+  })
+
+  items.forEach((item) => {
+    const fitsStandalone = item.widthMm <= usableWidthMm && item.heightMm <= usableDepthMm
+    if (!fitsStandalone) {
+      overflowCount += 1
+      const placement = {
+        id: item.id,
+        label: item.label,
+        xMm: edgeMarginMm,
+        yMm: edgeMarginMm,
+        widthMm: item.widthMm,
+        heightMm: item.heightMm,
+        previewDataUrl: item.previewDataUrl,
+        fits: false,
+        plateIndex: currentPlate.plateIndex,
+      }
+      placements.push(placement)
+      currentPlate.placements.push(placement)
+      return
+    }
+
+    if (currentPlate.cursorX + item.widthMm > widthMm - edgeMarginMm + 1e-6) {
+      currentPlate.cursorX = edgeMarginMm
+      currentPlate.cursorY += currentPlate.rowMaxHeight + spacingMm
+      currentPlate.rowMaxHeight = 0
+    }
+
+    if (currentPlate.cursorY + item.heightMm > depthMm - edgeMarginMm + 1e-6) {
+      currentPlate = createPlateCursor(plates.length)
+      plates.push({
+        plateIndex: currentPlate.plateIndex,
+        placements: currentPlate.placements,
+      })
+    }
+
+    const placement = {
+      id: item.id,
+      label: item.label,
+      xMm: currentPlate.cursorX,
+      yMm: currentPlate.cursorY,
+      widthMm: item.widthMm,
+      heightMm: item.heightMm,
+      previewDataUrl: item.previewDataUrl,
+      fits: true,
+      plateIndex: currentPlate.plateIndex,
+    }
+
+    placements.push(placement)
+    currentPlate.placements.push(placement)
+    currentPlate.rowMaxHeight = Math.max(currentPlate.rowMaxHeight, item.heightMm)
+    currentPlate.cursorX += item.widthMm + spacingMm
+  })
+
+  return {
+    widthMm,
+    depthMm,
+    spacingMm,
+    edgeMarginMm,
+    plates,
+    placements,
+    overflowCount,
   }
 }
 
@@ -1796,7 +1991,10 @@ function build3mfCompositeObject(objectId: number, name: string, componentIds: n
   ].join('\n')
 }
 
-function buildBambuModelSettingsConfig(objects: BambuModelSettingsObject[]) {
+function buildBambuModelSettingsConfig(
+  objects: BambuModelSettingsObject[],
+  plates: BambuPlateAssignment[] = [],
+) {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<config>',
@@ -1815,28 +2013,27 @@ function buildBambuModelSettingsConfig(objects: BambuModelSettingsObject[]) {
       ].join('\n')),
       '  </object>',
     ].join('\n')),
+    ...plates.map((plate) => [
+      '  <plate>',
+      `    <metadata key="plater_id" value="${plate.plateIndex + 1}"/>`,
+      `    <metadata key="plater_name" value="打印板 ${plate.plateIndex + 1}"/>`,
+      '    <metadata key="locked" value="false"/>',
+      '    <metadata key="filament_map_mode" value="Auto For Flush"/>',
+      '    <metadata key="filament_maps" value="1 1"/>',
+      '    <metadata key="filament_volume_maps" value="0 0"/>',
+      ...plate.objectIds.map((objectId, objectIndex) => [
+        '    <model_instance>',
+        `      <metadata key="object_id" value="${objectId}"/>`,
+        '      <metadata key="instance_id" value="0"/>',
+        `      <metadata key="identify_id" value="${objectIndex + 1}"/>`,
+        '    </model_instance>',
+      ].join('\n')),
+      '  </plate>',
+    ].join('\n')),
+    '  <assemble>',
+    '  </assemble>',
     '</config>',
   ].join('\n')
-}
-
-function buildBambuProjectSettingsConfig(settings: BaseplateSettings) {
-  return JSON.stringify({
-    filament_colour: [
-      settings.baseColor.toUpperCase(),
-      settings.lineColor.toUpperCase(),
-    ],
-    filament_type: ['PLA', 'PLA'],
-    filament_ids: ['LINEART_BASE_SLOT_1', 'LINEART_LINE_SLOT_2'],
-    filament_settings_id: ['Generic PLA', 'Generic PLA'],
-    filament_density: ['1.24', '1.24'],
-    filament_diameter: ['1.75', '1.75'],
-    extruder_colour: [
-      settings.baseColor.toUpperCase(),
-      settings.lineColor.toUpperCase(),
-    ],
-    support_filament: '0',
-    support_interface_filament: '0',
-  }, null, 2)
 }
 
 function choosePixelsPerMm(boardWidthMm: number, boardHeightMm: number, detail: number) {

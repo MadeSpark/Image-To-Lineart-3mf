@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { BaseplateSettings, VectorLoop } from '@/types/generator'
-import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildLoopDxf, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText } from '@/utils/generator'
+import type { BaseplateSettings, PrintBedSettings, VectorLoop } from '@/types/generator'
+import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildLoopDxf, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText, planPrintBedLayout } from '@/utils/generator'
 import { unzipSync, strFromU8 } from 'fflate'
 
 const sourceLoops: VectorLoop[] = [
@@ -24,6 +24,12 @@ const rectangleSettings: BaseplateSettings = {
   marginMm: 4,
   lineColor: '#111111',
   baseColor: '#f3f6fb',
+}
+
+const printBedSettings: PrintBedSettings = {
+  widthMm: 256,
+  depthMm: 256,
+  spacingMm: 8,
 }
 
 describe('generator exports', () => {
@@ -60,6 +66,72 @@ describe('generator exports', () => {
       { x: 2, y: 4 },
       { x: 5, y: 3 },
     ])
+  })
+
+  it('centers a single item on the configured print bed', () => {
+    const layout = planPrintBedLayout([
+      {
+        id: 'a',
+        label: '单图',
+        widthMm: 50,
+        heightMm: 30,
+      },
+    ], printBedSettings)
+
+    expect(layout.overflowCount).toBe(0)
+    expect(layout.placements[0].xMm).toBe(103)
+    expect(layout.placements[0].yMm).toBe(113)
+    expect(layout.placements[0].plateIndex).toBe(0)
+  })
+
+  it('creates a second print bed when the first one is full', () => {
+    const layout = planPrintBedLayout([
+      {
+        id: 'a',
+        label: 'A',
+        widthMm: 90,
+        heightMm: 90,
+      },
+      {
+        id: 'b',
+        label: 'B',
+        widthMm: 90,
+        heightMm: 90,
+      },
+      {
+        id: 'c',
+        label: 'C',
+        widthMm: 90,
+        heightMm: 90,
+      },
+    ], {
+      widthMm: 200,
+      depthMm: 120,
+      spacingMm: 8,
+    })
+
+    expect(layout.overflowCount).toBe(0)
+    expect(layout.plates).toHaveLength(2)
+    expect(layout.placements[2].fits).toBe(true)
+    expect(layout.placements[2].plateIndex).toBe(1)
+  })
+
+  it('marks items as overflow only when a single model is larger than the print bed', () => {
+    const layout = planPrintBedLayout([
+      {
+        id: 'oversized',
+        label: '超大件',
+        widthMm: 220,
+        heightMm: 140,
+      },
+    ], {
+      widthMm: 200,
+      depthMm: 120,
+      spacingMm: 8,
+    })
+
+    expect(layout.overflowCount).toBe(1)
+    expect(layout.placements[0].fits).toBe(false)
   })
 
   it('builds a closed polyline DXF', () => {
@@ -195,6 +267,7 @@ describe('generator exports', () => {
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
       },
+      printBedSettings,
     )
 
     const files = unzipSync(packageBytes)
@@ -238,6 +311,7 @@ describe('generator exports', () => {
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
       },
+      printBedSettings,
     )
 
     const files = unzipSync(packageBytes)
@@ -301,6 +375,7 @@ describe('generator exports', () => {
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
       },
+      printBedSettings,
     )
 
     const files = unzipSync(packageBytes)
@@ -314,6 +389,7 @@ describe('generator exports', () => {
     const packageBytes = buildCombined3mfPackage(
       [
         {
+          id: '1-a',
           name: '1-a',
           artwork: {
             sourceKind: 'image',
@@ -343,6 +419,7 @@ describe('generator exports', () => {
           },
         },
         {
+          id: '2-b',
           name: '2-b',
           artwork: {
             sourceKind: 'image',
@@ -378,14 +455,22 @@ describe('generator exports', () => {
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
       },
+      {
+        widthMm: 200,
+        depthMm: 120,
+        spacingMm: 8,
+      },
     )
 
     const files = unzipSync(packageBytes)
     const modelXml = strFromU8(files['3D/3dmodel.model'])
+    const modelSettings = strFromU8(files['Metadata/model_settings.config'])
 
     expect(modelXml).toContain('name="1-a"')
     expect(modelXml).toContain('name="2-b"')
     expect((modelXml.match(/<item objectid=/g) ?? []).length).toBe(2)
     expect(strFromU8(files['Metadata/model_settings.config'])).toContain('<part id="3" subtype="normal_part">')
+    expect(modelSettings).toContain('<plate>')
+    expect(modelSettings).toContain('value="打印板 1"')
   })
 })

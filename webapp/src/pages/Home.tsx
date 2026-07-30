@@ -6,6 +6,7 @@ import { ExportPanel } from '@/components/ExportPanel'
 import { GifFramePicker } from '@/components/GifFramePicker'
 import { PalettePanel } from '@/components/PalettePanel'
 import { PreviewCanvas } from '@/components/PreviewCanvas'
+import { PrintBedPanel } from '@/components/PrintBedPanel'
 import { ThicknessPanel } from '@/components/ThicknessPanel'
 import { UploadPanel } from '@/components/UploadPanel'
 import { WorkbenchHeader } from '@/components/WorkbenchHeader'
@@ -23,6 +24,12 @@ import {
   getExportBaseName,
   processArtwork,
 } from '@/utils/generator'
+import {
+  createFallbackThreeMfTemplateProfile,
+  loadDefaultThreeMfTemplateProfile,
+  parseThreeMfTemplateFile,
+  summarizeThreeMfTemplateProfile,
+} from '@/utils/threeMfProfile'
 
 interface GifImportQueueItem {
   id: string
@@ -43,12 +50,17 @@ export default function Home() {
     lineartSettings,
     baseplateSettings,
     extrudeSettings,
+    printBedSettings,
+    customThreeMfProfile,
     setSourceImage,
     setImportedLineart,
     setPreviewMode,
     updateLineartSettings,
     updateBaseplateSettings,
     updateExtrudeSettings,
+    updatePrintBedSettings,
+    setCustomThreeMfProfile,
+    resetAllSettings,
   } = useGeneratorStore()
 
   const [entries, setEntries] = useState<BatchSourceItem[]>([])
@@ -56,11 +68,42 @@ export default function Home() {
   const [gifQueue, setGifQueue] = useState<GifImportQueueItem[]>([])
   const [batch3mfDialogOpen, setBatch3mfDialogOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [placementPreviewItems, setPlacementPreviewItems] = useState<ProcessedBatchItem[]>([])
+  const [placementPreviewProcessing, setPlacementPreviewProcessing] = useState(false)
+  const [placementPreviewError, setPlacementPreviewError] = useState<string | null>(null)
+  const [defaultThreeMfProfile, setDefaultThreeMfProfile] = useState(() => createFallbackThreeMfTemplateProfile())
+  const [templateProfileLoading, setTemplateProfileLoading] = useState(true)
 
   const activeEntry = useMemo(
     () => entries.find((entry) => entry.id === activeEntryId) ?? null,
     [activeEntryId, entries],
   )
+  const effectiveThreeMfProfile = customThreeMfProfile ?? defaultThreeMfProfile
+
+  useEffect(() => {
+    let cancelled = false
+
+    void loadDefaultThreeMfTemplateProfile()
+      .then((profile) => {
+        if (!cancelled) {
+          setDefaultThreeMfProfile(profile)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDefaultThreeMfProfile(createFallbackThreeMfTemplateProfile())
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTemplateProfileLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!entries.length) {
@@ -97,6 +140,51 @@ export default function Home() {
     baseplateSettings,
     extrudeSettings,
   )
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!entries.length) {
+      setPlacementPreviewItems([])
+      setPlacementPreviewProcessing(false)
+      setPlacementPreviewError(null)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    if (entries.length === 1 && activeEntry && artwork) {
+      setPlacementPreviewItems([{ entry: activeEntry, artwork }])
+      setPlacementPreviewProcessing(false)
+      setPlacementPreviewError(null)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setPlacementPreviewProcessing(true)
+    setPlacementPreviewError(null)
+
+    void buildProcessedItems(entries)
+      .then((processedItems) => {
+        if (cancelled) return
+        setPlacementPreviewItems(processedItems)
+      })
+      .catch((caughtError) => {
+        if (cancelled) return
+        setPlacementPreviewItems([])
+        setPlacementPreviewError(normalizeErrorMessage(caughtError, '摆盘预览生成失败'))
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPlacementPreviewProcessing(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeEntry, artwork, baseplateSettings, entries, extrudeSettings, lineartSettings])
 
   const currentPreviewUrl = useMemo(() => {
     if (!artwork || !activeEntry) return null
@@ -167,7 +255,7 @@ export default function Home() {
     }
   }
 
-  const buildProcessedItems = async (targets: BatchSourceItem[]) => {
+  async function buildProcessedItems(targets: BatchSourceItem[]) {
     const results: ProcessedBatchItem[] = []
 
     for (const entry of targets) {
@@ -201,11 +289,14 @@ export default function Home() {
       if (mode === 'single') {
         const bytes = buildCombined3mfPackage(
           processedItems.map((item) => ({
+            id: item.entry.id,
             name: buildNumberedBaseName(item.entry, entries.indexOf(item.entry)),
             artwork: item.artwork,
           })),
           baseplateSettings,
           extrudeSettings,
+          printBedSettings,
+          effectiveThreeMfProfile,
         )
         triggerBlobDownload('lineart-baseplate-batch.3mf', new Blob([bytes], { type: 'model/3mf' }))
         return
@@ -214,7 +305,13 @@ export default function Home() {
       const archiveEntries: Record<string, Uint8Array> = {}
       processedItems.forEach((item, index) => {
         const filename = `${buildNumberedBaseName(item.entry, index)}.3mf`
-        archiveEntries[filename] = build3mfPackage(item.artwork, baseplateSettings, extrudeSettings)
+        archiveEntries[filename] = build3mfPackage(
+          item.artwork,
+          baseplateSettings,
+          extrudeSettings,
+          printBedSettings,
+          effectiveThreeMfProfile,
+        )
       })
       triggerBlobDownload(
         'lineart-baseplate-3mf-batch.zip',
@@ -282,11 +379,42 @@ export default function Home() {
     try {
       triggerBlobDownload(
         `${exportBaseName}.3mf`,
-        new Blob([build3mfPackage(artwork, baseplateSettings, extrudeSettings)], { type: 'model/3mf' }),
+        new Blob([build3mfPackage(
+          artwork,
+          baseplateSettings,
+          extrudeSettings,
+          printBedSettings,
+          effectiveThreeMfProfile,
+        )], { type: 'model/3mf' }),
       )
     } finally {
       setExporting(false)
     }
+  }
+
+  const handleImport3mfProfile = async (file: File) => {
+    try {
+      const profile = await parseThreeMfTemplateFile(file)
+      setCustomThreeMfProfile(profile)
+      updatePrintBedSettings({
+        widthMm: profile.printBedWidthMm,
+        depthMm: profile.printBedDepthMm,
+      })
+      window.alert([
+        `已导入 3MF 打印配置：${profile.sourceName}`,
+        '',
+        ...summarizeThreeMfTemplateProfile(profile),
+      ].join('\n'))
+    } catch (caughtError) {
+      window.alert(normalizeErrorMessage(caughtError, '3MF 打印参数导入失败'))
+    }
+  }
+
+  const handleResetSettings = () => {
+    resetAllSettings({
+      widthMm: defaultThreeMfProfile.printBedWidthMm,
+      depthMm: defaultThreeMfProfile.printBedDepthMm,
+    })
   }
 
   const handleGifImportConfirm = (selectedFrames: GifFrameSource[]) => {
@@ -307,6 +435,7 @@ export default function Home() {
           onExportJson={() => void exportBatchFiles('json')}
           onExportPreview={() => void exportBatchFiles('png')}
           onExport3mf={() => void handleExport3mf()}
+          onResetSettings={handleResetSettings}
           canExport={canExport && !exporting}
         />
 
@@ -366,6 +495,26 @@ export default function Home() {
             <ThicknessPanel
               settings={extrudeSettings}
               onUpdateSettings={updateExtrudeSettings}
+            />
+            <PrintBedPanel
+              settings={printBedSettings}
+              items={placementPreviewItems.map((item) => ({
+                id: item.entry.id,
+                label: item.entry.label,
+                artwork: item.artwork,
+                isActive: item.entry.id === activeEntryId,
+              }))}
+              batchCount={entries.length}
+              processing={placementPreviewProcessing}
+              error={placementPreviewError}
+              profileName={effectiveThreeMfProfile.sourceName}
+              printerModel={effectiveThreeMfProfile.printerModel}
+              printerSettingsId={effectiveThreeMfProfile.printerSettingsId}
+              printSettingsId={effectiveThreeMfProfile.printSettingsId}
+              bedType={effectiveThreeMfProfile.bedType}
+              profileLoading={templateProfileLoading && !customThreeMfProfile}
+              onUpdateSettings={updatePrintBedSettings}
+              onImport3mfProfile={(file) => void handleImport3mfProfile(file)}
             />
             <ExportPanel
               stats={artwork?.stats ?? null}
@@ -449,6 +598,7 @@ function buildProjectPayload(entry: BatchSourceItem, artwork: ProcessedArtwork) 
     lineartSettings: state.lineartSettings,
     baseplateSettings: state.baseplateSettings,
     extrudeSettings: state.extrudeSettings,
+    printBedSettings: state.printBedSettings,
     board: {
       widthMm: artwork.boardWidthMm,
       heightMm: artwork.boardHeightMm,
