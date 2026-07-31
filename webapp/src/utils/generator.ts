@@ -868,50 +868,50 @@ export function getExportBaseName(name: string | undefined, fallback: string) {
 
 async function buildImageLineart(sourceImage: SourceImage, settings: LineartSettings) {
   const image = await loadHtmlImage(sourceImage.dataUrl)
-  const maxDimension = Math.max(320, Math.round(320 + settings.detail * 8))
-  const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
-  const width = Math.max(1, Math.round(image.naturalWidth * scale))
-  const height = Math.max(1, Math.round(image.naturalHeight * scale))
+  const maxDimension = Math.max(320, Math.round(480 + settings.detail * 12))
+  const processingScale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
+  const width = Math.max(1, Math.round(image.naturalWidth * processingScale))
+  const height = Math.max(1, Math.round(image.naturalHeight * processingScale))
   const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) {
     throw new Error('无法初始化图片处理画布')
   }
 
-  context.clearRect(0, 0, width, height)
-  context.drawImage(image, 0, 0, width, height)
-  const imageData = context.getImageData(0, 0, width, height)
-  const targetMask = new Uint8Array(width * height)
+  context.clearRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height)
   const targetColor = hexToRgb(settings.targetColor)
   const tolerance = Math.max(0, settings.threshold)
   const toleranceSq = tolerance * tolerance
+  const targetMask = buildTargetMaskFromOriginalPixels(
+    imageData.data,
+    canvas.width,
+    canvas.height,
+    width,
+    height,
+    targetColor,
+    tolerance,
+    toleranceSq,
+    settings.invert,
+  )
 
-  for (let index = 0; index < width * height; index += 1) {
-    const offset = index * 4
-    const alpha = imageData.data[offset + 3]
-    if (alpha < 8) {
-      targetMask[index] = settings.invert ? 1 : 0
-      continue
-    }
-
-    const current = {
-      r: imageData.data[offset],
-      g: imageData.data[offset + 1],
-      b: imageData.data[offset + 2],
-    }
-    const matches = colorDistance(current, targetColor) <= toleranceSq
-    targetMask[index] = settings.invert ? (matches ? 0 : 1) : (matches ? 1 : 0)
-  }
-
-  const slimmedEdges = getSlimLineMask(targetMask, width, height)
+  const bridgedMask = getAdaptivePreservedMask(targetMask, width, height)
+  const slimmedEdges = getAdaptiveLineMask(bridgedMask, width, height)
   const strokeRadius = Math.max(0, Math.round(settings.strokeWidth * 0.75))
   const widened = strokeRadius ? dilateMask(slimmedEdges, width, height, strokeRadius) : slimmedEdges
-  const cleaned = settings.despeckle ? removeSmallComponents(widened, width, height, settings.despeckle) : widened
+  const fillRatio = getFilledPixelCount(widened) / Math.max(1, width * height)
+  const despeckleStrength = fillRatio < 0.12
+    ? Math.round(settings.despeckle * 0.3)
+    : fillRatio < 0.2
+      ? Math.round(settings.despeckle * 0.55)
+      : settings.despeckle
+  const cleaned = despeckleStrength ? removeSmallComponents(widened, width, height, despeckleStrength) : widened
   const loops = smoothLoops(
     traceMaskToLoops(cleaned, width, height)
-      .filter((loop) => Math.abs(loopArea(loop.points)) >= 8),
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= 3),
     settings.smoothing,
   )
   const scaled = scaleLoopsToMaxDimension(normalizeLoops(loops), DEFAULT_LINEART_MAX_MM)
@@ -922,6 +922,95 @@ async function buildImageLineart(sourceImage: SourceImage, settings: LineartSett
     height: sourceImage.height,
     loops: scaled,
   }
+}
+
+function buildTargetMaskFromOriginalPixels(
+  pixels: Uint8ClampedArray,
+  sourceWidth: number,
+  sourceHeight: number,
+  outputWidth: number,
+  outputHeight: number,
+  targetColor: { r: number; g: number; b: number },
+  tolerance: number,
+  toleranceSq: number,
+  invert: boolean,
+) {
+  const hitCounts = new Uint32Array(outputWidth * outputHeight)
+  const totalCounts = new Uint32Array(outputWidth * outputHeight)
+  const targetLuminance = getColorLuminance(targetColor)
+  const useDarkTargetFallback = targetLuminance <= 28
+
+  for (let y = 0; y < sourceHeight; y += 1) {
+    const outputY = Math.min(outputHeight - 1, Math.floor((y * outputHeight) / sourceHeight))
+
+    for (let x = 0; x < sourceWidth; x += 1) {
+      const outputX = Math.min(outputWidth - 1, Math.floor((x * outputWidth) / sourceWidth))
+      const outputIndex = outputY * outputWidth + outputX
+      const offset = (y * sourceWidth + x) * 4
+      const alpha = pixels[offset + 3]
+
+      totalCounts[outputIndex] += 1
+
+      if (alpha < 8) {
+        if (invert) {
+          hitCounts[outputIndex] += 1
+        }
+        continue
+      }
+
+      const current = {
+        r: pixels[offset],
+        g: pixels[offset + 1],
+        b: pixels[offset + 2],
+      }
+      const matches = pixelMatchesTargetColor(
+        current,
+        targetColor,
+        tolerance,
+        toleranceSq,
+        targetLuminance,
+        useDarkTargetFallback,
+      )
+      if (invert ? !matches : matches) {
+        hitCounts[outputIndex] += 1
+      }
+    }
+  }
+
+  const mask = new Uint8Array(outputWidth * outputHeight)
+  for (let index = 0; index < mask.length; index += 1) {
+    const total = totalCounts[index]
+    if (!total) continue
+
+    const hits = hitCounts[index]
+    const threshold = invert
+      ? Math.max(1, Math.ceil(total * 0.35))
+      : Math.max(1, Math.ceil(total * 0.02))
+    mask[index] = hits >= threshold ? 1 : 0
+  }
+
+  return mask
+}
+
+function pixelMatchesTargetColor(
+  current: { r: number; g: number; b: number },
+  targetColor: { r: number; g: number; b: number },
+  tolerance: number,
+  toleranceSq: number,
+  targetLuminance: number,
+  useDarkTargetFallback: boolean,
+) {
+  if (colorDistance(current, targetColor) <= toleranceSq) {
+    return true
+  }
+
+  if (!useDarkTargetFallback) {
+    return false
+  }
+
+  const luminance = getColorLuminance(current)
+  const chromaSpread = Math.max(current.r, current.g, current.b) - Math.min(current.r, current.g, current.b)
+  return luminance <= targetLuminance + tolerance && chromaSpread <= Math.max(18, tolerance * 0.45)
 }
 
 function removeSmallComponents(mask: Uint8Array, width: number, height: number, minArea: number) {
@@ -1038,6 +1127,33 @@ function getSlimLineMask(mask: Uint8Array, width: number, height: number) {
   return hasFilledPixel(eroded) ? eroded : mask
 }
 
+function getAdaptivePreservedMask(mask: Uint8Array, width: number, height: number) {
+  const fillRatio = getFilledPixelCount(mask) / Math.max(1, width * height)
+
+  if (fillRatio >= 0.18) {
+    return mask.slice()
+  }
+
+  const closed = erodeMask(dilateMask(mask, width, height, 1), width, height, 1)
+  const retainedRatio = getFilledPixelCount(closed) / Math.max(1, getFilledPixelCount(mask))
+
+  return retainedRatio >= 0.78 ? closed : mask.slice()
+}
+
+function getAdaptiveLineMask(mask: Uint8Array, width: number, height: number) {
+  const fillRatio = getFilledPixelCount(mask) / Math.max(1, width * height)
+
+  // Low coverage images are usually already line art; shrinking them drops major details.
+  if (fillRatio < 0.12) {
+    return mask.slice()
+  }
+
+  const slimmed = getSlimLineMask(mask, width, height)
+  const retainedRatio = getFilledPixelCount(slimmed) / Math.max(1, getFilledPixelCount(mask))
+
+  return retainedRatio >= 0.72 ? slimmed : mask.slice()
+}
+
 function hasFilledPixel(mask: Uint8Array) {
   for (let index = 0; index < mask.length; index += 1) {
     if (mask[index]) {
@@ -1045,6 +1161,21 @@ function hasFilledPixel(mask: Uint8Array) {
     }
   }
   return false
+}
+
+
+function getFilledPixelCount(mask: Uint8Array) {
+  let count = 0
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index]) {
+      count += 1
+    }
+  }
+  return count
+}
+
+function getColorLuminance(color: { r: number; g: number; b: number }) {
+  return color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722
 }
 
 function rasterizeLoopsToMask(

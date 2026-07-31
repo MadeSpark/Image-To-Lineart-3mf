@@ -1,4 +1,4 @@
-export type PreviewMode = '原图' | '线稿' | '底板预览' | '分层预览'
+export type PreviewMode = '原图' | '线稿' | '底板预览' | '分层预览' | '3D预览'
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
 export type SourceKind = 'image' | 'dxf'
 

@@ -1,4 +1,5 @@
 import { Circle, RectangleHorizontal, ScanSearch, SwatchBook } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import type { BaseplateSettings, BaseTemplate } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
@@ -90,6 +91,16 @@ export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) 
           onChange={(value) => onUpdateSettings({ expandMm: value })}
         />
         <NumberField
+          label="矩形长度"
+          suffix="mm"
+          value={settings.heightMm}
+          min={20}
+          max={200}
+          step={1}
+          disabled={settings.template !== 'rectangle'}
+          onChange={(value) => onUpdateSettings({ heightMm: value })}
+        />
+        <NumberField
           label="矩形宽度"
           suffix="mm"
           value={settings.widthMm}
@@ -98,16 +109,6 @@ export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) 
           step={1}
           disabled={settings.template !== 'rectangle'}
           onChange={(value) => onUpdateSettings({ widthMm: value })}
-        />
-        <NumberField
-          label="矩形高度"
-          suffix="mm"
-          value={settings.heightMm}
-          min={20}
-          max={200}
-          step={1}
-          disabled={settings.template !== 'rectangle'}
-          onChange={(value) => onUpdateSettings({ heightMm: value })}
         />
         <NumberField
           label="圆形直径"
@@ -205,6 +206,21 @@ function ColorField({
   value: string
   onChange: (value: string) => void
 }) {
+  const [draftValue, setDraftValue] = useState(value)
+
+  useEffect(() => {
+    setDraftValue(value)
+  }, [value])
+
+  const commitValue = () => {
+    if (draftValue !== value) {
+      onChange(draftValue)
+    }
+  }
+  const swatchValue = /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(draftValue)
+    ? draftValue
+    : value
+
   return (
     <label className="rounded-[18px] border border-slate-200 bg-slate-50 p-4 text-[11px] text-slate-500">
       <div className="mb-3 font-medium text-slate-700">{label}</div>
@@ -212,14 +228,24 @@ function ColorField({
         <div className="rounded-2xl border border-slate-200 bg-white p-2">
           <input
             type="color"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
+            value={swatchValue}
+            onChange={(event) => setDraftValue(event.target.value)}
+            onMouseUp={commitValue}
+            onTouchEnd={commitValue}
+            onKeyUp={commitValue}
+            onBlur={commitValue}
             className="h-9 w-10 cursor-pointer rounded-xl border-0 bg-transparent p-0"
           />
         </div>
         <input
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
+          value={draftValue}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onBlur={commitValue}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              commitValue()
+            }
+          }}
           className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 outline-none transition focus:border-sky-400"
         />
       </div>

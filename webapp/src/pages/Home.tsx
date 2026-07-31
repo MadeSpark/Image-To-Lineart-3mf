@@ -42,6 +42,8 @@ interface ProcessedBatchItem {
   artwork: ProcessedArtwork
 }
 
+const MAKERWORLD_SUPPORT_URL = 'https://makerworld.com.cn/zh/models/2796222-kai-yuan-xian-gao-sheng-cheng-qi-fan-ye-dong-hua-s#profileId-3257232'
+
 export default function Home() {
   const {
     sourceImage,
@@ -73,6 +75,9 @@ export default function Home() {
   const [placementPreviewError, setPlacementPreviewError] = useState<string | null>(null)
   const [defaultThreeMfProfile, setDefaultThreeMfProfile] = useState(() => createFallbackThreeMfTemplateProfile())
   const [templateProfileLoading, setTemplateProfileLoading] = useState(true)
+  const [welcomeDialogOpen, setWelcomeDialogOpen] = useState(true)
+  const [thanksDialogOpen, setThanksDialogOpen] = useState(false)
+  const [qaqModeEnabled, setQaqModeEnabled] = useState(false)
 
   const activeEntry = useMemo(
     () => entries.find((entry) => entry.id === activeEntryId) ?? null,
@@ -185,6 +190,57 @@ export default function Home() {
       cancelled = true
     }
   }, [activeEntry, artwork, baseplateSettings, entries, extrudeSettings, lineartSettings])
+
+  useEffect(() => {
+    if (!qaqModeEnabled) return
+
+    const root = document.getElementById('root')
+    if (!root) return
+
+    const ignoredTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT'])
+
+    const prefixTextNodes = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const textNode = node as Text
+        const content = textNode.textContent ?? ''
+        if (!content.trim()) return
+        if (content.trimStart().startsWith('QAQ')) return
+        textNode.textContent = content.replace(/^(\s*)/, '$1QAQ ')
+        return
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) return
+
+      const element = node as HTMLElement
+      if (ignoredTags.has(element.tagName)) return
+      if (element.dataset.qaqIgnore === 'true') return
+
+      element.childNodes.forEach(prefixTextNodes)
+    }
+
+    prefixTextNodes(root)
+
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'characterData') {
+          prefixTextNodes(mutation.target)
+          return
+        }
+
+        mutation.addedNodes.forEach(prefixTextNodes)
+      })
+    })
+
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    })
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [qaqModeEnabled])
 
   const currentPreviewUrl = useMemo(() => {
     if (!artwork || !activeEntry) return null
@@ -417,6 +473,21 @@ export default function Home() {
     })
   }
 
+  const handleSupportNow = () => {
+    window.open(MAKERWORLD_SUPPORT_URL, '_blank', 'noopener,noreferrer')
+    setWelcomeDialogOpen(false)
+  }
+
+  const handleAlreadySupported = () => {
+    setWelcomeDialogOpen(false)
+    setThanksDialogOpen(true)
+  }
+
+  const handleCruelReject = () => {
+    setWelcomeDialogOpen(false)
+    setQaqModeEnabled(true)
+  }
+
   const handleGifImportConfirm = (selectedFrames: GifFrameSource[]) => {
     if (!activeGifImport) return
     const baseName = getExportBaseName(activeGifImport.fileName, 'gif-frame')
@@ -484,6 +555,8 @@ export default function Home() {
               processing={processing || exporting}
               error={error}
               targetColor={lineartSettings.targetColor}
+              baseplateSettings={baseplateSettings}
+              extrudeSettings={extrudeSettings}
               onPickTargetColor={(color) => updateLineartSettings({ targetColor: color })}
             />
           </div>
@@ -547,7 +620,108 @@ export default function Home() {
           onChooseMode={(mode) => void exportBatch3mf(mode)}
         />
       )}
+
+      {welcomeDialogOpen && (
+        <WelcomeDialog
+          onSupportNow={handleSupportNow}
+          onAlreadySupported={handleAlreadySupported}
+          onCruelReject={handleCruelReject}
+        />
+      )}
+
+      {thanksDialogOpen && (
+        <MessageDialog
+          title="谢谢喵"
+          message="感谢你的支持喵，祝你打印顺利、出图顺利喵~"
+          confirmText="知道了喵"
+          onConfirm={() => setThanksDialogOpen(false)}
+        />
+      )}
     </main>
+  )
+}
+
+function WelcomeDialog({
+  onSupportNow,
+  onAlreadySupported,
+  onCruelReject,
+}: {
+  onSupportNow: () => void
+  onAlreadySupported: () => void
+  onCruelReject: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
+        <div className="rounded-full bg-sky-50 px-3 py-1 text-[11px] font-medium tracking-[0.24em] text-sky-700">
+          欢迎使用喵
+        </div>
+        <h2 className="mt-4 text-2xl font-semibold text-slate-950">欢迎使用喵</h2>
+        <p className="mt-3 text-sm leading-7 text-slate-600">
+          此为开源项目，如果喜欢的话还请前往拓竹社区给作者助力喵~
+        </p>
+
+        <div className="mt-6 flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={onSupportNow}
+            className="inline-flex items-center justify-center rounded-2xl bg-[#0088ff] px-4 py-3 text-sm font-medium text-white shadow-[0_14px_32px_rgba(0,136,255,0.28)] transition hover:bg-[#0077e0]"
+          >
+            这就去助力
+          </button>
+          <button
+            type="button"
+            onClick={onAlreadySupported}
+            className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+          >
+            助力过了喵
+          </button>
+          <button
+            type="button"
+            onClick={onCruelReject}
+            className="inline-flex items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-100"
+          >
+            残忍拒绝
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MessageDialog({
+  title,
+  message,
+  confirmText,
+  onConfirm,
+}: {
+  title: string
+  message: string
+  confirmText: string
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
+        <div className="rounded-full bg-sky-50 px-3 py-1 text-[11px] font-medium tracking-[0.24em] text-sky-700">
+          {title}
+        </div>
+        <h2 className="mt-4 text-2xl font-semibold text-slate-950">{title}</h2>
+        <p className="mt-3 text-sm leading-7 text-slate-600">
+          {message}
+        </p>
+
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="inline-flex w-full items-center justify-center rounded-2xl bg-[#0088ff] px-4 py-3 text-sm font-medium text-white shadow-[0_14px_32px_rgba(0,136,255,0.28)] transition hover:bg-[#0077e0]"
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

@@ -33,6 +33,20 @@ export function UploadPanel({
 }: UploadPanelProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const dxfInputRef = useRef<HTMLInputElement | null>(null)
+  const [draftTargetColor, setDraftTargetColor] = useState(settings.targetColor)
+
+  useEffect(() => {
+    setDraftTargetColor(settings.targetColor)
+  }, [settings.targetColor])
+
+  const commitTargetColor = () => {
+    if (draftTargetColor !== settings.targetColor) {
+      onUpdateSettings({ targetColor: draftTargetColor })
+    }
+  }
+  const targetSwatchValue = /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(draftTargetColor)
+    ? draftTargetColor
+    : settings.targetColor
 
   return (
     <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_18px_60px_rgba(15,23,42,0.05)]">
@@ -212,13 +226,23 @@ export function UploadPanel({
             <div className="grid grid-cols-[auto_1fr] items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3">
               <input
                 type="color"
-                value={settings.targetColor}
-                onChange={(event) => onUpdateSettings({ targetColor: event.target.value })}
+                value={targetSwatchValue}
+                onChange={(event) => setDraftTargetColor(event.target.value)}
+                onMouseUp={commitTargetColor}
+                onTouchEnd={commitTargetColor}
+                onKeyUp={commitTargetColor}
+                onBlur={commitTargetColor}
                 className="h-9 w-10 cursor-pointer rounded-xl border-0 bg-transparent p-0"
               />
               <input
-                value={settings.targetColor}
-                onChange={(event) => onUpdateSettings({ targetColor: event.target.value })}
+                value={draftTargetColor}
+                onChange={(event) => setDraftTargetColor(event.target.value)}
+                onBlur={commitTargetColor}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    commitTargetColor()
+                  }
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 outline-none transition focus:border-sky-400"
               />
             </div>

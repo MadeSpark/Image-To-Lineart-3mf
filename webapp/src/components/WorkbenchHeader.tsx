@@ -2,7 +2,7 @@ import { Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes } from 
 import type { BaseTemplate, PreviewMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
-const modes: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览']
+const modes: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览', '3D预览']
 const templates: Array<{ value: BaseTemplate; label: string }> = [
   { value: 'outline', label: '轮廓底板' },
   { value: 'rectangle', label: '矩形底板' },
@@ -69,7 +69,7 @@ export function WorkbenchHeader({
             ))}
           </div>
 
-          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 md:grid-cols-5">
             {modes.map((mode) => (
               <button
                 key={mode}

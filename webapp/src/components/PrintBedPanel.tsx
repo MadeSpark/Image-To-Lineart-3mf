@@ -118,20 +118,20 @@ export function PrintBedPanel({
 
       <div className="grid gap-3 rounded-[20px] bg-slate-50 p-4 md:grid-cols-3">
         <NumberField
+          label="打印盘长度"
+          value={settings.depthMm}
+          min={80}
+          max={500}
+          step={1}
+          onChange={(value) => onUpdateSettings({ depthMm: value })}
+        />
+        <NumberField
           label="打印盘宽度"
           value={settings.widthMm}
           min={80}
           max={500}
           step={1}
           onChange={(value) => onUpdateSettings({ widthMm: value })}
-        />
-        <NumberField
-          label="打印盘深度"
-          value={settings.depthMm}
-          min={80}
-          max={500}
-          step={1}
-          onChange={(value) => onUpdateSettings({ depthMm: value })}
         />
         <NumberField
           label="模型间距"
