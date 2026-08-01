@@ -22,7 +22,7 @@ import {
 } from './threeMfProfile'
 
 const DEFAULT_LINEART_MAX_MM = 40
-const MIN_EXPORTABLE_LINE_WIDTH_MM = 0.42
+const MIN_EXPORTABLE_LINE_WIDTH_MM = 0.24
 const MIN_EXPORTABLE_SOLID_DIAMETER_MM = 0.9
 const MAX_EXPORTABLE_HOLE_DIAMETER_MM = 0.7
 
@@ -460,7 +460,7 @@ export function build3mfPackage(
   // #endregion
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
-  const lineMeshPixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
+  const lineMeshPixelsPerMm = chooseSingleExportPixelsPerMm(artwork)
   const singlePlacement = planPrintBedLayout([{
     id: 'single-artwork',
     label: '单文件导出',
@@ -584,20 +584,33 @@ function choosePreviewModelPixelsPerMm(artwork: PreviewModelArtworkInput) {
   return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 2.5, 8)
 }
 
+function chooseSingleExportPixelsPerMm(artwork: ProcessedArtwork) {
+  const sourcePixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 12), 10, 32)
+  const longestSideMm = Math.max(artwork.boardWidthMm, artwork.boardHeightMm, 1)
+  const areaMm = Math.max(artwork.boardWidthMm * artwork.boardHeightMm, 1)
+  const maxSingleDimensionPx = 1800
+  const maxSingleAreaPx = 1_800_000
+  const byDimension = maxSingleDimensionPx / longestSideMm
+  const byArea = Math.sqrt(maxSingleAreaPx / areaMm)
+
+  return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 12, 32)
+}
+
 function chooseCombinedExportPixelsPerMm(
   artwork: ProcessedArtwork,
   itemCount: number,
   totalAreaMm: number,
 ) {
-  const sourcePixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
+  const sourcePixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 12), 8, 24)
   const longestSideMm = Math.max(artwork.boardWidthMm, artwork.boardHeightMm, 1)
-  const safeTotalAreaMm = Math.max(totalAreaMm, artwork.boardWidthMm * artwork.boardHeightMm, 1)
-  const maxCombinedDimensionPx = itemCount >= 16 ? 520 : itemCount >= 8 ? 720 : 960
-  const maxCombinedAreaPx = itemCount >= 16 ? 1_250_000 : itemCount >= 8 ? 1_900_000 : 2_800_000
+  const itemAreaMm = Math.max(artwork.boardWidthMm * artwork.boardHeightMm, 1)
+  const safeAverageAreaMm = Math.max(totalAreaMm / Math.max(itemCount, 1), itemAreaMm, 1)
+  const maxCombinedDimensionPx = itemCount >= 16 ? 1120 : itemCount >= 8 ? 1360 : 1680
+  const maxCombinedAreaPx = itemCount >= 16 ? 850_000 : itemCount >= 8 ? 1_150_000 : 1_500_000
   const byDimension = maxCombinedDimensionPx / longestSideMm
-  const byArea = Math.sqrt(maxCombinedAreaPx / safeTotalAreaMm)
+  const byArea = Math.sqrt(maxCombinedAreaPx / safeAverageAreaMm)
 
-  return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 2.5, 12)
+  return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 6, 16)
 }
 
 export function buildCombined3mfPackage(
@@ -2438,17 +2451,50 @@ function extrudeMaskToMesh(
   const isFilled = (x: number, y: number) => (
     x >= 0 && y >= 0 && x < raster.width && y < raster.height ? printSafeMask[y * raster.width + x] === 1 : false
   )
+  const z0 = zStart
+  const z1 = zStart + height
+  const consumed = new Uint8Array(raster.width * raster.height)
 
   for (let y = 0; y < raster.height; y += 1) {
     for (let x = 0; x < raster.width; x += 1) {
-      if (!isFilled(x, y)) continue
+      const cellIndex = y * raster.width + x
+      if (!isFilled(x, y) || consumed[cellIndex]) {
+        continue
+      }
+
+      let rectWidth = 1
+      while (
+        x + rectWidth < raster.width
+        && isFilled(x + rectWidth, y)
+        && !consumed[y * raster.width + x + rectWidth]
+      ) {
+        rectWidth += 1
+      }
+
+      let rectHeight = 1
+      let canExtend = true
+      while (y + rectHeight < raster.height && canExtend) {
+        for (let scanX = x; scanX < x + rectWidth; scanX += 1) {
+          if (!isFilled(scanX, y + rectHeight) || consumed[(y + rectHeight) * raster.width + scanX]) {
+            canExtend = false
+            break
+          }
+        }
+        if (canExtend) {
+          rectHeight += 1
+        }
+      }
+
+      for (let fillY = y; fillY < y + rectHeight; fillY += 1) {
+        for (let fillX = x; fillX < x + rectWidth; fillX += 1) {
+          consumed[fillY * raster.width + fillX] = 1
+        }
+      }
 
       const x0 = x * cellWidthMm
-      const x1 = (x + 1) * cellWidthMm
+      const x1 = (x + rectWidth) * cellWidthMm
       const y0 = y * cellWidthMm
-      const y1 = (y + 1) * cellWidthMm
-      const z0 = zStart
-      const z1 = zStart + height
+      const y1 = (y + rectHeight) * cellWidthMm
 
       addQuad(
         [x0, y0, z1],
@@ -2462,38 +2508,89 @@ function extrudeMaskToMesh(
         [x1, y0, z0],
         [x0, y0, z0],
       )
+    }
+  }
 
-      if (!isFilled(x, y - 1)) {
+  for (let y = 0; y < raster.height; y += 1) {
+    let startX = -1
+    for (let x = 0; x <= raster.width; x += 1) {
+      const edgeFilled = x < raster.width && isFilled(x, y) && !isFilled(x, y - 1)
+      if (edgeFilled && startX < 0) {
+        startX = x
+      } else if (!edgeFilled && startX >= 0) {
+        const x0 = startX * cellWidthMm
+        const x1 = x * cellWidthMm
+        const y0 = y * cellWidthMm
         addQuad(
           [x0, y0, z0],
           [x1, y0, z0],
           [x1, y0, z1],
           [x0, y0, z1],
         )
+        startX = -1
       }
-      if (!isFilled(x + 1, y)) {
-        addQuad(
-          [x1, y0, z0],
-          [x1, y1, z0],
-          [x1, y1, z1],
-          [x1, y0, z1],
-        )
-      }
-      if (!isFilled(x, y + 1)) {
+    }
+  }
+
+  for (let y = 0; y < raster.height; y += 1) {
+    let startX = -1
+    for (let x = 0; x <= raster.width; x += 1) {
+      const edgeFilled = x < raster.width && isFilled(x, y) && !isFilled(x, y + 1)
+      if (edgeFilled && startX < 0) {
+        startX = x
+      } else if (!edgeFilled && startX >= 0) {
+        const x0 = startX * cellWidthMm
+        const x1 = x * cellWidthMm
+        const y1 = (y + 1) * cellWidthMm
         addQuad(
           [x1, y1, z0],
           [x0, y1, z0],
           [x0, y1, z1],
           [x1, y1, z1],
         )
+        startX = -1
       }
-      if (!isFilled(x - 1, y)) {
+    }
+  }
+
+  for (let x = 0; x < raster.width; x += 1) {
+    let startY = -1
+    for (let y = 0; y <= raster.height; y += 1) {
+      const edgeFilled = y < raster.height && isFilled(x, y) && !isFilled(x - 1, y)
+      if (edgeFilled && startY < 0) {
+        startY = y
+      } else if (!edgeFilled && startY >= 0) {
+        const x0 = x * cellWidthMm
+        const y0 = startY * cellWidthMm
+        const y1 = y * cellWidthMm
         addQuad(
           [x0, y1, z0],
           [x0, y0, z0],
           [x0, y0, z1],
           [x0, y1, z1],
         )
+        startY = -1
+      }
+    }
+  }
+
+  for (let x = 0; x < raster.width; x += 1) {
+    let startY = -1
+    for (let y = 0; y <= raster.height; y += 1) {
+      const edgeFilled = y < raster.height && isFilled(x, y) && !isFilled(x + 1, y)
+      if (edgeFilled && startY < 0) {
+        startY = y
+      } else if (!edgeFilled && startY >= 0) {
+        const x1 = (x + 1) * cellWidthMm
+        const y0 = startY * cellWidthMm
+        const y1 = y * cellWidthMm
+        addQuad(
+          [x1, y0, z0],
+          [x1, y1, z0],
+          [x1, y1, z1],
+          [x1, y0, z1],
+        )
+        startY = -1
       }
     }
   }
