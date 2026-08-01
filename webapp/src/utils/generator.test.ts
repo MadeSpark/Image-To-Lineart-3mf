@@ -20,6 +20,8 @@ const rectangleSettings: BaseplateSettings = {
   expandMm: 2,
   widthMm: 50,
   heightMm: 50,
+  rectangleSizeMode: 'manual',
+  rectangleScalePercent: 100,
   diameterMm: 50,
   marginMm: 4,
   lineColor: '#111111',

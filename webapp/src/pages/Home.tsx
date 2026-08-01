@@ -36,6 +36,7 @@ import {
   parseThreeMfTemplateFile,
   summarizeThreeMfTemplateProfile,
 } from '@/utils/threeMfProfile'
+import { calculateRectangleRatioLayout } from '@/utils/baseplate'
 
 interface GifImportQueueItem {
   id: string
@@ -92,6 +93,17 @@ export default function Home() {
     [activeEntryId, entries],
   )
   const effectiveThreeMfProfile = customThreeMfProfile ?? defaultThreeMfProfile
+  const activeSourceAspectRatio = useMemo(() => {
+    if (sourceImage && sourceImage.width > 0 && sourceImage.height > 0) {
+      return sourceImage.width / sourceImage.height
+    }
+
+    if (importedLineart && importedLineart.widthMm > 0 && importedLineart.heightMm > 0) {
+      return importedLineart.widthMm / importedLineart.heightMm
+    }
+
+    return null
+  }, [importedLineart, sourceImage])
 
   useEffect(() => {
     let cancelled = false
@@ -145,6 +157,41 @@ export default function Home() {
 
     setImportedLineart(activeEntry.importedLineart)
   }, [activeEntry, setImportedLineart, setSourceImage])
+
+  useEffect(() => {
+    if (baseplateSettings.template !== 'rectangle' || baseplateSettings.rectangleSizeMode !== 'ratio' || !activeSourceAspectRatio) {
+      return
+    }
+
+    const nextLayout = calculateRectangleRatioLayout(
+      activeSourceAspectRatio,
+      baseplateSettings.rectangleScalePercent,
+      printBedSettings,
+      baseplateSettings.marginMm,
+    )
+
+    if (
+      Math.abs(nextLayout.widthMm - baseplateSettings.widthMm) < 0.05
+      && Math.abs(nextLayout.heightMm - baseplateSettings.heightMm) < 0.05
+    ) {
+      return
+    }
+
+    updateBaseplateSettings({
+      widthMm: nextLayout.widthMm,
+      heightMm: nextLayout.heightMm,
+    })
+  }, [
+    activeSourceAspectRatio,
+    baseplateSettings.heightMm,
+    baseplateSettings.marginMm,
+    baseplateSettings.rectangleScalePercent,
+    baseplateSettings.rectangleSizeMode,
+    baseplateSettings.template,
+    baseplateSettings.widthMm,
+    printBedSettings,
+    updateBaseplateSettings,
+  ])
 
   const { artwork, processing, error } = useArtworkProcessor(
     sourceImage,
@@ -679,6 +726,8 @@ export default function Home() {
           <div className="space-y-6">
             <PalettePanel
               settings={baseplateSettings}
+              sourceAspectRatio={activeSourceAspectRatio}
+              printBedSettings={printBedSettings}
               onUpdateSettings={updateBaseplateSettings}
             />
             <ThicknessPanel

@@ -1,5 +1,6 @@
 export type PreviewMode = '原图' | '线稿' | '底板预览' | '分层预览' | '3D预览'
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
+export type RectangleSizeMode = 'ratio' | 'manual'
 export type SourceKind = 'image' | 'dxf'
 
 export interface SourceImage {
@@ -57,6 +58,8 @@ export interface BaseplateSettings {
   expandMm: number
   widthMm: number
   heightMm: number
+  rectangleSizeMode: RectangleSizeMode
+  rectangleScalePercent: number
   diameterMm: number
   marginMm: number
   lineColor: string

@@ -12,6 +12,8 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(160)
     expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(0.4)
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('ratio')
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(100)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
     expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
     expect(useGeneratorStore.getState().customThreeMfProfile).toBeNull()
@@ -82,6 +84,8 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().baseplateSettings.template).toBe('rectangle')
     expect(useGeneratorStore.getState().baseplateSettings.widthMm).toBe(66)
     expect(useGeneratorStore.getState().baseplateSettings.heightMm).toBe(50)
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('ratio')
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(100)
     expect(useGeneratorStore.getState().extrudeSettings.baseThicknessMm).toBe(0.3)
     expect(useGeneratorStore.getState().extrudeSettings.lineThicknessMm).toBe(0.2)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(300)
@@ -138,6 +142,8 @@ describe('useGeneratorStore persistence', () => {
         template: 'rectangle',
         widthMm: 250,
         heightMm: 140,
+        rectangleSizeMode: 'manual',
+        rectangleScalePercent: 80,
         marginMm: 0,
       },
       printBedSettings: {
@@ -152,6 +158,8 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().baseplateSettings.template).toBe('rectangle')
     expect(useGeneratorStore.getState().baseplateSettings.widthMm).toBe(250)
     expect(useGeneratorStore.getState().baseplateSettings.heightMm).toBe(140)
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('manual')
+    expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(80)
     expect(useGeneratorStore.getState().baseplateSettings.marginMm).toBe(0)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(180)
     expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(180)

@@ -1,7 +1,8 @@
 import { Circle, RectangleHorizontal, ScanSearch, SwatchBook } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { BaseplateSettings, BaseTemplate } from '@/types/generator'
+import type { BaseplateSettings, BaseTemplate, PrintBedSettings, RectangleSizeMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
+import { calculateRectangleRatioLayout } from '@/utils/baseplate'
 
 const templates: Array<{
   value: BaseTemplate
@@ -31,10 +32,27 @@ const templates: Array<{
 
 interface PalettePanelProps {
   settings: BaseplateSettings
+  sourceAspectRatio: number | null
+  printBedSettings: PrintBedSettings
   onUpdateSettings: (patch: Partial<BaseplateSettings>) => void
 }
 
-export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) {
+const rectangleSizeModes: Array<{ value: RectangleSizeMode; label: string }> = [
+  { value: 'ratio', label: '比例模式' },
+  { value: 'manual', label: '长宽模式' },
+]
+
+export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, onUpdateSettings }: PalettePanelProps) {
+  const rectangleRatioLayout = sourceAspectRatio
+    ? calculateRectangleRatioLayout(
+      sourceAspectRatio,
+      settings.rectangleScalePercent,
+      printBedSettings,
+      settings.marginMm,
+    )
+    : null
+  const lowScaleWarning = settings.rectangleScalePercent < 35
+
   return (
     <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_18px_60px_rgba(15,23,42,0.05)]">
       <div className="flex items-center justify-between">
@@ -95,9 +113,9 @@ export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) 
           suffix="mm"
           value={settings.heightMm}
           min={20}
-          max={200}
+          max={500}
           step={1}
-          disabled={settings.template !== 'rectangle'}
+          disabled={settings.template !== 'rectangle' || settings.rectangleSizeMode === 'ratio'}
           onChange={(value) => onUpdateSettings({ heightMm: value })}
         />
         <NumberField
@@ -105,9 +123,9 @@ export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) 
           suffix="mm"
           value={settings.widthMm}
           min={20}
-          max={200}
+          max={500}
           step={1}
-          disabled={settings.template !== 'rectangle'}
+          disabled={settings.template !== 'rectangle' || settings.rectangleSizeMode === 'ratio'}
           onChange={(value) => onUpdateSettings({ widthMm: value })}
         />
         <NumberField
@@ -130,6 +148,63 @@ export function PalettePanel({ settings, onUpdateSettings }: PalettePanelProps) 
           disabled={settings.template === 'outline'}
           onChange={(value) => onUpdateSettings({ marginMm: value })}
         />
+        {settings.template === 'rectangle' && (
+          <>
+            <div className="space-y-2 text-[11px] text-slate-500">
+              <div>矩形计算方式</div>
+              <div className="grid grid-cols-2 gap-2">
+                {rectangleSizeModes.map((mode) => {
+                  const selected = settings.rectangleSizeMode === mode.value
+                  return (
+                    <button
+                      key={mode.value}
+                      type="button"
+                      onClick={() => onUpdateSettings({ rectangleSizeMode: mode.value })}
+                      className={cn(
+                        'rounded-xl border px-3 py-2 text-xs font-medium transition',
+                        selected
+                          ? 'border-sky-300 bg-sky-50 text-sky-700'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
+                      )}
+                    >
+                      {mode.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <NumberField
+              label="比例百分比"
+              suffix="%"
+              value={settings.rectangleScalePercent}
+              min={10}
+              max={200}
+              step={1}
+              disabled={settings.rectangleSizeMode !== 'ratio'}
+              onChange={(value) => onUpdateSettings({ rectangleScalePercent: value })}
+            />
+            {settings.rectangleSizeMode === 'ratio' && (
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs leading-6 text-slate-500">
+                {sourceAspectRatio && rectangleRatioLayout ? (
+                  <>
+                    <div className="font-medium text-slate-700">
+                      当前将按原图比例自动计算为 {rectangleRatioLayout.widthMm.toFixed(1)} × {rectangleRatioLayout.heightMm.toFixed(1)} mm
+                    </div>
+                    <div>基准可用范围：{rectangleRatioLayout.availableWidthMm.toFixed(1)} × {rectangleRatioLayout.availableHeightMm.toFixed(1)} mm</div>
+                    {!rectangleRatioLayout.fitsPrintBed && (
+                      <div className="text-rose-600">当前比例过大，已经超出打印板可用范围，请调低比例百分比或减小安全边距。</div>
+                    )}
+                    {lowScaleWarning && (
+                      <div className="text-amber-700">当前比例偏小，虽然能生成，但会明显影响输出质量和细节保留。</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-amber-700">比例模式需要先导入图片或 DXF，才能按原始长宽比自动计算矩形尺寸。</div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
