@@ -526,7 +526,7 @@ export function buildPreviewModelGltfBlob(
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
 ) {
-  const lineMeshPixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
+  const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   const baseMesh = extrudeLoopsToMesh(
     keepOuterLoops(artwork.baseLoops),
     0,
@@ -550,6 +550,18 @@ export function buildPreviewModelGltfBlob(
     artwork.boardWidthMm,
     artwork.boardHeightMm,
   )
+}
+
+function choosePreviewModelPixelsPerMm(artwork: PreviewModelArtworkInput) {
+  const sourcePixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 8), 4, 12)
+  const longestSideMm = Math.max(artwork.boardWidthMm, artwork.boardHeightMm, 1)
+  const areaMm = Math.max(artwork.boardWidthMm * artwork.boardHeightMm, 1)
+  const maxPreviewDimensionPx = 960
+  const maxPreviewAreaPx = 520_000
+  const byDimension = maxPreviewDimensionPx / longestSideMm
+  const byArea = Math.sqrt(maxPreviewAreaPx / areaMm)
+
+  return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 2.5, 8)
 }
 
 export function buildCombined3mfPackage(
