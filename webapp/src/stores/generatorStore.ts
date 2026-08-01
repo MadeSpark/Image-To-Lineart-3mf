@@ -11,6 +11,8 @@ import type {
 } from '@/types/generator'
 
 const SETTINGS_STORAGE_KEY = 'lineart-baseplate-generator-settings'
+const DEFAULT_PREVIEW_MODE: PreviewMode = '分层预览'
+const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览', '3D预览']
 
 export const defaultLineartSettings: LineartSettings = {
   detail: 100,
@@ -63,15 +65,66 @@ interface GeneratorState {
   updateExtrudeSettings: (patch: Partial<ExtrudeSettings>) => void
   updatePrintBedSettings: (patch: Partial<PrintBedSettings>) => void
   setCustomThreeMfProfile: (profile: ThreeMfTemplateProfile | null) => void
+  applyImportedSettings: (settings: GeneratorSettingsPatch) => void
   resetAllSettings: (defaultBedPatch?: Partial<PrintBedSettings>) => void
 }
 
-interface PersistedGeneratorSettings {
+export interface PersistedGeneratorSettings {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   printBedSettings: PrintBedSettings
   customThreeMfProfile?: ThreeMfTemplateProfile | null
+}
+
+export interface GeneratorSettingsPayload extends PersistedGeneratorSettings {
+  previewMode?: PreviewMode
+}
+
+export interface GeneratorSettingsPatch {
+  previewMode?: PreviewMode
+  lineartSettings?: Partial<LineartSettings>
+  baseplateSettings?: Partial<BaseplateSettings>
+  extrudeSettings?: Partial<ExtrudeSettings>
+  printBedSettings?: Partial<PrintBedSettings>
+  customThreeMfProfile?: ThreeMfTemplateProfile | null
+}
+
+function isPreviewMode(value: unknown): value is PreviewMode {
+  return PREVIEW_MODES.includes(value as PreviewMode)
+}
+
+function normalizePersistedSettings(parsed: GeneratorSettingsPatch) {
+  return {
+    previewMode: isPreviewMode(parsed.previewMode) ? parsed.previewMode : DEFAULT_PREVIEW_MODE,
+    lineartSettings: {
+      ...defaultLineartSettings,
+      ...parsed.lineartSettings,
+    },
+    baseplateSettings: {
+      ...defaultBaseplateSettings,
+      ...parsed.baseplateSettings,
+    },
+    extrudeSettings: {
+      ...defaultExtrudeSettings,
+      ...parsed.extrudeSettings,
+    },
+    printBedSettings: {
+      ...defaultPrintBedSettings,
+      ...parsed.printBedSettings,
+    },
+    customThreeMfProfile: parsed.customThreeMfProfile ?? null,
+  }
+}
+
+export function buildPersistedSettingsSnapshot(settings: PersistedGeneratorSettings) {
+  return {
+    lineartSettings: settings.lineartSettings,
+    baseplateSettings: settings.baseplateSettings,
+    extrudeSettings: settings.extrudeSettings,
+    printBedSettings: settings.printBedSettings,
+    customThreeMfProfile: settings.customThreeMfProfile ?? null,
+  }
 }
 
 function loadPersistedSettings(): PersistedGeneratorSettings | null {
@@ -85,26 +138,8 @@ function loadPersistedSettings(): PersistedGeneratorSettings | null {
       return null
     }
 
-    const parsed = JSON.parse(raw) as Partial<PersistedGeneratorSettings>
-    return {
-      lineartSettings: {
-        ...defaultLineartSettings,
-        ...parsed.lineartSettings,
-      },
-      baseplateSettings: {
-        ...defaultBaseplateSettings,
-        ...parsed.baseplateSettings,
-      },
-      extrudeSettings: {
-        ...defaultExtrudeSettings,
-        ...parsed.extrudeSettings,
-      },
-      printBedSettings: {
-        ...defaultPrintBedSettings,
-        ...parsed.printBedSettings,
-      },
-      customThreeMfProfile: parsed.customThreeMfProfile ?? null,
-    }
+    const parsed = JSON.parse(raw) as Partial<GeneratorSettingsPayload>
+    return buildPersistedSettingsSnapshot(normalizePersistedSettings(parsed))
   } catch {
     return null
   }
@@ -127,7 +162,7 @@ const persistedSettings = loadPersistedSettings()
 export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   sourceImage: null,
   importedLineart: null,
-  previewMode: '分层预览',
+  previewMode: DEFAULT_PREVIEW_MODE,
   lineartSettings: persistedSettings?.lineartSettings ?? defaultLineartSettings,
   baseplateSettings: persistedSettings?.baseplateSettings ?? defaultBaseplateSettings,
   extrudeSettings: persistedSettings?.extrudeSettings ?? defaultExtrudeSettings,
@@ -141,13 +176,13 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       ...state.lineartSettings,
       ...patch,
     }
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings,
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
       customThreeMfProfile: get().customThreeMfProfile,
-    })
+    }))
     return { lineartSettings }
   }),
   updateBaseplateSettings: (patch) => set((state) => {
@@ -155,13 +190,13 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       ...state.baseplateSettings,
       ...patch,
     }
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings: get().lineartSettings,
       baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
       customThreeMfProfile: get().customThreeMfProfile,
-    })
+    }))
     return { baseplateSettings }
   }),
   updateExtrudeSettings: (patch) => set((state) => {
@@ -169,13 +204,13 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       ...state.extrudeSettings,
       ...patch,
     }
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings: get().lineartSettings,
       baseplateSettings: get().baseplateSettings,
       extrudeSettings,
       printBedSettings: get().printBedSettings,
       customThreeMfProfile: get().customThreeMfProfile,
-    })
+    }))
     return { extrudeSettings }
   }),
   updatePrintBedSettings: (patch) => set((state) => {
@@ -183,38 +218,51 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       ...state.printBedSettings,
       ...patch,
     }
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings: get().lineartSettings,
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings,
       customThreeMfProfile: get().customThreeMfProfile,
-    })
+    }))
     return { printBedSettings }
   }),
   setCustomThreeMfProfile: (customThreeMfProfile) => {
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings: get().lineartSettings,
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
       customThreeMfProfile,
-    })
+    }))
     set({ customThreeMfProfile })
+  },
+  applyImportedSettings: (settings) => {
+    const normalized = normalizePersistedSettings(settings)
+    savePersistedSettings(buildPersistedSettingsSnapshot(normalized))
+    set({
+      previewMode: isPreviewMode(settings.previewMode) ? settings.previewMode : get().previewMode,
+      lineartSettings: normalized.lineartSettings,
+      baseplateSettings: normalized.baseplateSettings,
+      extrudeSettings: normalized.extrudeSettings,
+      printBedSettings: normalized.printBedSettings,
+      customThreeMfProfile: normalized.customThreeMfProfile,
+    })
   },
   resetAllSettings: (defaultBedPatch) => {
     const printBedSettings = {
       ...defaultPrintBedSettings,
       ...defaultBedPatch,
     }
-    savePersistedSettings({
+    savePersistedSettings(buildPersistedSettingsSnapshot({
       lineartSettings: defaultLineartSettings,
       baseplateSettings: defaultBaseplateSettings,
       extrudeSettings: defaultExtrudeSettings,
       printBedSettings,
       customThreeMfProfile: null,
-    })
+    }))
     set({
+      previewMode: DEFAULT_PREVIEW_MODE,
       lineartSettings: defaultLineartSettings,
       baseplateSettings: defaultBaseplateSettings,
       extrudeSettings: defaultExtrudeSettings,

@@ -124,4 +124,41 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
     expect(useGeneratorStore.getState().customThreeMfProfile).toBeNull()
   })
+
+  it('applies imported settings and persists them', async () => {
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    useGeneratorStore.getState().applyImportedSettings({
+      previewMode: '线稿',
+      lineartSettings: {
+        detail: 64,
+        targetColor: '#0f0f0f',
+      },
+      baseplateSettings: {
+        template: 'rectangle',
+        widthMm: 250,
+        heightMm: 140,
+        marginMm: 0,
+      },
+      printBedSettings: {
+        widthMm: 180,
+        depthMm: 180,
+      },
+    })
+
+    expect(useGeneratorStore.getState().previewMode).toBe('线稿')
+    expect(useGeneratorStore.getState().lineartSettings.detail).toBe(64)
+    expect(useGeneratorStore.getState().lineartSettings.targetColor).toBe('#0f0f0f')
+    expect(useGeneratorStore.getState().baseplateSettings.template).toBe('rectangle')
+    expect(useGeneratorStore.getState().baseplateSettings.widthMm).toBe(250)
+    expect(useGeneratorStore.getState().baseplateSettings.heightMm).toBe(140)
+    expect(useGeneratorStore.getState().baseplateSettings.marginMm).toBe(0)
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(180)
+    expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(180)
+
+    const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings') ?? '{}')
+    expect(saved.lineartSettings.detail).toBe(64)
+    expect(saved.baseplateSettings.widthMm).toBe(250)
+    expect(saved.printBedSettings.depthMm).toBe(180)
+  })
 })

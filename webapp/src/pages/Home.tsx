@@ -11,7 +11,11 @@ import { ThicknessPanel } from '@/components/ThicknessPanel'
 import { UploadPanel } from '@/components/UploadPanel'
 import { WorkbenchHeader } from '@/components/WorkbenchHeader'
 import { useArtworkProcessor } from '@/hooks/useArtworkProcessor'
-import { useGeneratorStore } from '@/stores/generatorStore'
+import {
+  buildPersistedSettingsSnapshot,
+  useGeneratorStore,
+} from '@/stores/generatorStore'
+import type { GeneratorSettingsPatch, GeneratorSettingsPayload } from '@/stores/generatorStore'
 import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, VectorLoop, VectorPoint } from '@/types/generator'
 import {
   applyLineartStrokeEdit,
@@ -64,6 +68,7 @@ export default function Home() {
     updateExtrudeSettings,
     updatePrintBedSettings,
     setCustomThreeMfProfile,
+    applyImportedSettings,
     resetAllSettings,
   } = useGeneratorStore()
 
@@ -505,6 +510,46 @@ export default function Home() {
     })
   }
 
+  const handleExportSettings = () => {
+    const settingsPayload: GeneratorSettingsExportFile = {
+      kind: 'lineart-baseplate-settings',
+      version: __APP_VERSION__,
+      exportedAt: new Date().toISOString(),
+      settings: {
+        previewMode,
+        ...buildPersistedSettingsSnapshot({
+          lineartSettings,
+          baseplateSettings,
+          extrudeSettings,
+          printBedSettings,
+          customThreeMfProfile,
+        }),
+      },
+    }
+
+    triggerBlobDownload(
+      `lineart-settings-v${__APP_VERSION__}.json`,
+      new Blob([JSON.stringify(settingsPayload, null, 2)], { type: 'application/json' }),
+    )
+  }
+
+  const handleImportSettings = async (file: File) => {
+    try {
+      const payload = extractImportedSettingsPayload(JSON.parse(await file.text()))
+      setLineartOverrides({})
+      applyImportedSettings(payload)
+      window.alert([
+        `已导入参数：${file.name}`,
+        `预览模式：${payload.previewMode ?? previewMode}`,
+        `目标颜色：${payload.lineartSettings?.targetColor ?? lineartSettings.targetColor}`,
+        `底板模板：${payload.baseplateSettings?.template ?? baseplateSettings.template}`,
+        `打印盘：${payload.printBedSettings?.widthMm ?? printBedSettings.widthMm} x ${payload.printBedSettings?.depthMm ?? printBedSettings.depthMm} mm`,
+      ].join('\n'))
+    } catch (caughtError) {
+      window.alert(normalizeErrorMessage(caughtError, '参数导入失败'))
+    }
+  }
+
   const handleApplyLineartStroke = (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => {
     if (!activeEntry || !effectiveArtwork || previewMode !== '线稿' || !points.length) {
       return
@@ -567,6 +612,8 @@ export default function Home() {
           template={baseplateSettings.template}
           onPreviewModeChange={setPreviewMode}
           onTemplateChange={(template) => updateBaseplateSettings({ template })}
+          onExportSettings={handleExportSettings}
+          onImportSettings={(file) => void handleImportSettings(file)}
           onExportJson={() => void exportBatchFiles('json')}
           onExportPreview={() => void exportBatchFiles('png')}
           onExport3mf={() => void handleExport3mf()}
@@ -848,6 +895,35 @@ function buildProjectPayload(entry: BatchSourceItem, artwork: ProcessedArtwork) 
     },
     stats: artwork.stats,
   }
+}
+
+interface GeneratorSettingsExportFile {
+  kind: 'lineart-baseplate-settings'
+  version: string
+  exportedAt: string
+  settings: GeneratorSettingsPayload
+}
+
+function extractImportedSettingsPayload(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('参数文件格式无效')
+  }
+
+  const candidate = payload as Record<string, unknown>
+  const settings = 'settings' in candidate && candidate.settings && typeof candidate.settings === 'object'
+    ? candidate.settings as Record<string, unknown>
+    : candidate
+
+  if (
+    !('lineartSettings' in settings)
+    && !('baseplateSettings' in settings)
+    && !('extrudeSettings' in settings)
+    && !('printBedSettings' in settings)
+  ) {
+    throw new Error('未找到可导入的参数配置')
+  }
+
+  return settings as GeneratorSettingsPatch
 }
 
 function getPreviewUrlForMode(previewMode: PreviewMode, artwork: ProcessedArtwork, entry: BatchSourceItem) {

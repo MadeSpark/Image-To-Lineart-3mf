@@ -1,4 +1,5 @@
-import { Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes } from 'lucide-react'
+import { Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Upload } from 'lucide-react'
+import { useRef } from 'react'
 import type { BaseTemplate, PreviewMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +16,8 @@ interface WorkbenchHeaderProps {
   template: BaseTemplate
   onPreviewModeChange: (mode: PreviewMode) => void
   onTemplateChange: (template: BaseTemplate) => void
+  onExportSettings: () => void
+  onImportSettings: (file: File) => void
   onExportJson: () => void
   onExportPreview: () => void
   onExport3mf: () => void
@@ -28,12 +31,16 @@ export function WorkbenchHeader({
   template,
   onPreviewModeChange,
   onTemplateChange,
+  onExportSettings,
+  onImportSettings,
   onExportJson,
   onExportPreview,
   onExport3mf,
   onResetSettings,
   canExport,
 }: WorkbenchHeaderProps) {
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+
   return (
     <header className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -88,6 +95,19 @@ export function WorkbenchHeader({
           </div>
 
           <div className="flex items-center gap-2">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) {
+                  onImportSettings(file)
+                }
+                event.currentTarget.value = ''
+              }}
+            />
             <button
               type="button"
               onClick={onResetSettings}
@@ -95,6 +115,22 @@ export function WorkbenchHeader({
             >
               <RotateCcw className="h-4 w-4" />
               恢复默认配置
+            </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+            >
+              <Upload className="h-4 w-4" />
+              导入参数
+            </button>
+            <button
+              type="button"
+              onClick={onExportSettings}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+            >
+              <Download className="h-4 w-4" />
+              导出参数
             </button>
             <button
               type="button"
