@@ -14,15 +14,14 @@ import type {
   VectorLoop,
   VectorPoint,
 } from '@/types/generator'
-import { clamp, colorDistance, hexToRgb } from '@/utils/color'
+import { clamp, colorDistance, hexToRgb } from './color'
 import {
   buildThreeMfFilamentSequenceJson,
   buildThreeMfProjectSettingsConfig,
   buildThreeMfSliceInfoConfig,
-} from '@/utils/threeMfProfile'
+} from './threeMfProfile'
 
 const DEFAULT_LINEART_MAX_MM = 40
-const PREVIEW_MAX_PX = 900
 const MIN_EXPORTABLE_LINE_WIDTH_MM = 0.42
 const MIN_EXPORTABLE_SOLID_DIAMETER_MM = 0.9
 const MAX_EXPORTABLE_HOLE_DIAMETER_MM = 0.7
@@ -48,6 +47,11 @@ interface MeshData {
   vertices: Array<[number, number, number]>
   triangles: Array<[number, number, number]>
 }
+
+type PreviewModelArtworkInput = Pick<
+  ProcessedArtwork,
+  'baseLoops' | 'lineLoops' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm'
+>
 
 interface BambuModelSettingsObject {
   id: number
@@ -444,19 +448,35 @@ export function build3mfPackage(
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
   const lineMeshPixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
-  const baseMesh = extrudeLoopsToMesh(
-    keepOuterLoops(flippedBaseLoops),
-    0,
-    extrudeSettings.baseThicknessMm,
+  const singlePlacement = planPrintBedLayout([{
+    id: 'single-artwork',
+    label: '单文件导出',
+    widthMm: artwork.boardWidthMm,
+    heightMm: artwork.boardHeightMm,
+  }], printBedSettings).placements[0]
+  const offsetX = singlePlacement?.xMm ?? 0
+  const offsetY = singlePlacement?.yMm ?? 0
+  const baseMesh = translateMesh(
+    extrudeLoopsToMesh(
+      keepOuterLoops(flippedBaseLoops),
+      0,
+      extrudeSettings.baseThicknessMm,
+    ),
+    offsetX,
+    offsetY,
   )
-  const lineMesh = extrudeMaskToMesh(
-    flippedLineLoops,
-    artwork.boardWidthMm,
-    artwork.boardHeightMm,
-    lineMeshPixelsPerMm,
-    extrudeSettings.lineHeightMm,
-    extrudeSettings.lineThicknessMm,
-    MIN_EXPORTABLE_LINE_WIDTH_MM,
+  const lineMesh = translateMesh(
+    extrudeMaskToMesh(
+      flippedLineLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      extrudeSettings.lineHeightMm,
+      extrudeSettings.lineThicknessMm,
+      MIN_EXPORTABLE_LINE_WIDTH_MM,
+    ),
+    offsetX,
+    offsetY,
   )
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
   const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
@@ -499,6 +519,37 @@ export function build3mfPackage(
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
   }, { level: 0 })
+}
+
+export function buildPreviewModelGltfBlob(
+  artwork: PreviewModelArtworkInput,
+  baseplateSettings: BaseplateSettings,
+  extrudeSettings: ExtrudeSettings,
+) {
+  const lineMeshPixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
+  const baseMesh = extrudeLoopsToMesh(
+    keepOuterLoops(artwork.baseLoops),
+    0,
+    extrudeSettings.baseThicknessMm,
+  )
+  const lineMesh = extrudeMaskToMesh(
+    artwork.lineLoops,
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+    lineMeshPixelsPerMm,
+    extrudeSettings.lineHeightMm,
+    extrudeSettings.lineThicknessMm,
+    MIN_EXPORTABLE_LINE_WIDTH_MM,
+  )
+
+  return buildGltfPreviewBlob(
+    [
+      { mesh: baseMesh, name: '底板', color: baseplateSettings.baseColor },
+      { mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor },
+    ],
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+  )
 }
 
 export function buildCombined3mfPackage(
@@ -635,6 +686,150 @@ export function buildCombined3mfPackage(
   }, { level: 0 })
 }
 
+function buildGltfPreviewBlob(
+  parts: Array<{ mesh: MeshData; name: string; color: string }>,
+  boardWidthMm: number,
+  boardHeightMm: number,
+) {
+  const centerX = boardWidthMm * 0.5
+  const centerY = boardHeightMm * 0.5
+  const chunks: Uint8Array[] = []
+  const bufferViews: Array<{ buffer: number; byteOffset: number; byteLength: number; target: number }> = []
+  const accessors: Array<Record<string, unknown>> = []
+  const meshes: Array<Record<string, unknown>> = []
+  const materials: Array<Record<string, unknown>> = []
+  const nodes: Array<Record<string, unknown>> = []
+  let byteOffset = 0
+
+  const appendChunk = (chunk: Uint8Array, target: number) => {
+    const padding = (4 - (byteOffset % 4)) % 4
+    if (padding > 0) {
+      chunks.push(new Uint8Array(padding))
+      byteOffset += padding
+    }
+
+    const offset = byteOffset
+    chunks.push(chunk)
+    byteOffset += chunk.byteLength
+    bufferViews.push({
+      buffer: 0,
+      byteOffset: offset,
+      byteLength: chunk.byteLength,
+      target,
+    })
+    return bufferViews.length - 1
+  }
+
+  parts.forEach((part) => {
+    if (!part.mesh.vertices.length || !part.mesh.triangles.length) {
+      return
+    }
+
+    const positions = new Float32Array(part.mesh.vertices.length * 3)
+    const mins = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]
+    const maxs = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY]
+
+    part.mesh.vertices.forEach(([x, y, z], index) => {
+      const gltfX = x - centerX
+      const gltfY = z
+      const gltfZ = y - centerY
+      const baseIndex = index * 3
+      positions[baseIndex] = gltfX
+      positions[baseIndex + 1] = gltfY
+      positions[baseIndex + 2] = gltfZ
+
+      mins[0] = Math.min(mins[0], gltfX)
+      mins[1] = Math.min(mins[1], gltfY)
+      mins[2] = Math.min(mins[2], gltfZ)
+      maxs[0] = Math.max(maxs[0], gltfX)
+      maxs[1] = Math.max(maxs[1], gltfY)
+      maxs[2] = Math.max(maxs[2], gltfZ)
+    })
+
+    const indices = new Uint32Array(part.mesh.triangles.length * 3)
+    part.mesh.triangles.forEach(([a, b, c], index) => {
+      const baseIndex = index * 3
+      indices[baseIndex] = a
+      indices[baseIndex + 1] = b
+      indices[baseIndex + 2] = c
+    })
+
+    const positionView = appendChunk(new Uint8Array(positions.buffer), 34962)
+    accessors.push({
+      bufferView: positionView,
+      componentType: 5126,
+      count: part.mesh.vertices.length,
+      type: 'VEC3',
+      min: mins,
+      max: maxs,
+    })
+    const positionAccessor = accessors.length - 1
+
+    const indexView = appendChunk(new Uint8Array(indices.buffer), 34963)
+    accessors.push({
+      bufferView: indexView,
+      componentType: 5125,
+      count: indices.length,
+      type: 'SCALAR',
+      min: [0],
+      max: [part.mesh.vertices.length - 1],
+    })
+    const indexAccessor = accessors.length - 1
+
+    materials.push({
+      name: part.name,
+      doubleSided: true,
+      pbrMetallicRoughness: {
+        baseColorFactor: [...hexColorToLinearFactor(part.color), 1],
+        metallicFactor: 0,
+        roughnessFactor: 1,
+      },
+      extensions: {
+        KHR_materials_unlit: {},
+      },
+    })
+    const materialIndex = materials.length - 1
+
+    meshes.push({
+      name: part.name,
+      primitives: [{
+        attributes: { POSITION: positionAccessor },
+        indices: indexAccessor,
+        material: materialIndex,
+        mode: 4,
+      }],
+    })
+    nodes.push({
+      name: part.name,
+      mesh: meshes.length - 1,
+    })
+  })
+
+  const combinedBuffer = concatUint8Arrays(chunks)
+  const gltf = {
+    asset: {
+      version: '2.0',
+      generator: 'image-to-lineart-3mf',
+    },
+    extensionsUsed: ['KHR_materials_unlit'],
+    scene: 0,
+    scenes: [{
+      nodes: nodes.map((_, index) => index),
+    }],
+    nodes,
+    meshes,
+    materials,
+    accessors,
+    bufferViews,
+    buffers: [{
+      byteLength: combinedBuffer.byteLength,
+      uri: `data:application/octet-stream;base64,${bytesToBase64(combinedBuffer)}`,
+    }],
+  }
+
+  return new Blob([JSON.stringify(gltf)], { type: 'model/gltf+json' })
+}
+
 export function build3mfModelXml(
   baseMesh: MeshData,
   lineMesh: MeshData,
@@ -667,6 +862,69 @@ export function build3mfModelXml(
     '  </build>',
     '</model>',
   ].join('\n')
+}
+
+export function rebuildArtworkWithLineLoops(
+  artwork: ProcessedArtwork,
+  lineLoops: VectorLoop[],
+  settings: BaseplateSettings,
+) {
+  const nextLineLoops = lineLoops.map((loop) => ({
+    ...loop,
+    points: sanitizeLoop(loop.points),
+  })).filter((loop) => loop.points.length >= 3)
+
+  return {
+    ...artwork,
+    lineLoops: nextLineLoops,
+    previews: buildPreviewAssets(
+      nextLineLoops,
+      artwork.baseLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      settings,
+    ),
+    stats: {
+      ...artwork.stats,
+      lineLoopCount: nextLineLoops.length,
+      lineSegments: nextLineLoops.reduce((sum, loop) => sum + loop.points.length, 0),
+    },
+  }
+}
+
+export function applyLineartStrokeEdit(
+  artwork: ProcessedArtwork,
+  settings: BaseplateSettings,
+  points: VectorPoint[],
+  radiusMm: number,
+  mode: 'brush' | 'eraser',
+) {
+  if (!points.length) {
+    return artwork
+  }
+
+  const pixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 12), 10, 32)
+  const raster = rasterizeLoopsToMask(
+    artwork.lineLoops,
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+    pixelsPerMm,
+    0,
+  )
+  paintMaskStroke(
+    raster.mask,
+    raster.width,
+    raster.height,
+    pixelsPerMm,
+    points,
+    Math.max(0.2, radiusMm),
+    mode === 'brush' ? 1 : 0,
+  )
+  const editedLoops = traceMaskToLoops(raster.mask, raster.width, raster.height)
+    .map((loop) => pixelsToMm(loop, pixelsPerMm, 0))
+    .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.02)
+
+  return rebuildArtworkWithLineLoops(artwork, editedLoops, settings)
 }
 
 export function layoutLineLoops(
@@ -866,7 +1124,10 @@ export function getExportBaseName(name: string | undefined, fallback: string) {
   return name.replace(/\.[^.]+$/, '') || fallback
 }
 
-async function buildImageLineart(sourceImage: SourceImage, settings: LineartSettings) {
+async function buildImageLineart(
+  sourceImage: SourceImage,
+  settings: LineartSettings,
+) {
   const image = await loadHtmlImage(sourceImage.dataUrl)
   const maxDimension = Math.max(320, Math.round(480 + settings.detail * 12))
   const processingScale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
@@ -897,7 +1158,6 @@ async function buildImageLineart(sourceImage: SourceImage, settings: LineartSett
     toleranceSq,
     settings.invert,
   )
-
   const bridgedMask = getAdaptivePreservedMask(targetMask, width, height)
   const slimmedEdges = getAdaptiveLineMask(bridgedMask, width, height)
   const strokeRadius = Math.max(0, Math.round(settings.strokeWidth * 0.75))
@@ -1188,8 +1448,9 @@ function rasterizeLoopsToMask(
   const width = Math.max(1, Math.ceil((widthMm + paddingMm * 2) * pixelsPerMm))
   const height = Math.max(1, Math.ceil((heightMm + paddingMm * 2) * pixelsPerMm))
   const isJsDom = typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
+  const hasDocumentCanvas = typeof document !== 'undefined' && typeof document.createElement === 'function'
 
-  if (isJsDom) {
+  if (isJsDom || !hasDocumentCanvas) {
     return rasterizeLoopsWithoutCanvas(loops, width, height, pixelsPerMm, paddingMm)
   }
 
@@ -1358,16 +1619,51 @@ function chooseNextEdge(previousDir: number, candidates: number[], edges: Array<
 }
 
 function smoothLoops(loops: VectorLoop[], smoothing: number) {
-  const iterations = Math.min(2, Math.round(smoothing / 28))
-  const minDistance = 0.08 + smoothing * 0.0025
+  const normalized = clamp(smoothing / 100, 0, 1)
+  const smoothingPasses = Math.min(4, Math.round(smoothing / 18))
+  const cornerPrunePasses = Math.min(3, Math.round(smoothing / 30))
+  const blend = 0.16 + normalized * 0.22
+  const wrinkleTolerance = 0.05 + normalized * 0.4
+  const simplifyTolerance = normalized > 0.08 ? 0.04 + normalized * normalized * 0.7 : 0
+  const minDistance = 0.08 + smoothing * 0.003
 
   return loops
     .map((loop) => {
-      let points = sanitizeLoop(loop.points)
-      for (let index = 0; index < iterations; index += 1) {
-        points = chaikin(points)
+      const originalPoints = sanitizeLoop(loop.points)
+      const originalMetrics = measureLoopGeometry(originalPoints)
+      const shapeGuard = getLoopShapeGuard(originalMetrics)
+      const isThinLineLoop = originalMetrics.minDimension <= 0.9 || originalMetrics.aspectRatio >= 5
+      let points = originalPoints
+      for (let index = 0; index < smoothingPasses; index += 1) {
+        points = preserveLoopShape(
+          points,
+          smoothRing(points, blend),
+          originalMetrics,
+          shapeGuard,
+        )
       }
-      points = dedupeByDistance(points, minDistance)
+      for (let index = 0; index < cornerPrunePasses; index += 1) {
+        points = preserveLoopShape(
+          points,
+          pruneWrinkles(points, wrinkleTolerance),
+          originalMetrics,
+          shapeGuard,
+        )
+      }
+      if (simplifyTolerance > 0) {
+        points = preserveLoopShape(
+          points,
+          simplifyClosedLoop(points, isThinLineLoop ? simplifyTolerance * 0.15 : simplifyTolerance),
+          originalMetrics,
+          shapeGuard,
+        )
+      }
+      points = preserveLoopShape(
+        points,
+        dedupeByDistance(points, isThinLineLoop ? minDistance * 0.4 : minDistance),
+        originalMetrics,
+        shapeGuard,
+      )
       points = sanitizeLoop(points)
       return {
         ...loop,
@@ -1377,24 +1673,189 @@ function smoothLoops(loops: VectorLoop[], smoothing: number) {
     .filter((loop) => loop.points.length >= 3)
 }
 
-function chaikin(points: VectorPoint[]) {
+function smoothRing(points: VectorPoint[], blend: number) {
   if (points.length < 3) return points
   const next: VectorPoint[] = []
 
   for (let index = 0; index < points.length; index += 1) {
+    const previous = points[(index - 1 + points.length) % points.length]
     const current = points[index]
     const following = points[(index + 1) % points.length]
+    const midpointX = (previous.x + following.x) * 0.5
+    const midpointY = (previous.y + following.y) * 0.5
     next.push({
-      x: current.x * 0.75 + following.x * 0.25,
-      y: current.y * 0.75 + following.y * 0.25,
-    })
-    next.push({
-      x: current.x * 0.25 + following.x * 0.75,
-      y: current.y * 0.25 + following.y * 0.75,
+      x: current.x * (1 - blend) + midpointX * blend,
+      y: current.y * (1 - blend) + midpointY * blend,
     })
   }
 
   return next
+}
+
+function measureLoopGeometry(points: VectorPoint[]) {
+  const bounds = getLoopBounds([{ points, closed: true }])
+  const area = Math.abs(loopArea(points))
+  let perimeter = 0
+
+  for (let index = 0; index < points.length; index += 1) {
+    perimeter += distance(points[index], points[(index + 1) % points.length])
+  }
+
+  const minDimension = Math.max(Math.min(bounds.width, bounds.height), 0.001)
+  const maxDimension = Math.max(bounds.width, bounds.height, 0.001)
+
+  return {
+    area,
+    perimeter,
+    width: bounds.width,
+    height: bounds.height,
+    minDimension,
+    maxDimension,
+    aspectRatio: maxDimension / minDimension,
+  }
+}
+
+function getLoopShapeGuard(metrics: ReturnType<typeof measureLoopGeometry>) {
+  const isThinLineLoop = metrics.minDimension <= 0.9 || metrics.aspectRatio >= 5
+
+  return {
+    areaRatio: isThinLineLoop ? 0.82 : 0.68,
+    perimeterRatio: isThinLineLoop ? 0.78 : 0.58,
+    widthRatio: metrics.width <= 0.9 ? 0.78 : 0.62,
+    heightRatio: metrics.height <= 0.9 ? 0.78 : 0.62,
+    dominantRatio: isThinLineLoop ? 0.92 : 0.82,
+  }
+}
+
+function preserveLoopShape(
+  currentPoints: VectorPoint[],
+  candidatePoints: VectorPoint[],
+  originalMetrics: ReturnType<typeof measureLoopGeometry>,
+  shapeGuard: ReturnType<typeof getLoopShapeGuard>,
+) {
+  const sanitizedCandidate = sanitizeLoop(candidatePoints)
+  if (sanitizedCandidate.length < 3) {
+    return currentPoints
+  }
+
+  const candidateMetrics = measureLoopGeometry(sanitizedCandidate)
+  if (candidateMetrics.area < originalMetrics.area * shapeGuard.areaRatio) {
+    return currentPoints
+  }
+  if (candidateMetrics.perimeter < originalMetrics.perimeter * shapeGuard.perimeterRatio) {
+    return currentPoints
+  }
+  if (originalMetrics.width > 0 && candidateMetrics.width < originalMetrics.width * shapeGuard.widthRatio) {
+    return currentPoints
+  }
+  if (originalMetrics.height > 0 && candidateMetrics.height < originalMetrics.height * shapeGuard.heightRatio) {
+    return currentPoints
+  }
+  if (candidateMetrics.maxDimension < originalMetrics.maxDimension * shapeGuard.dominantRatio) {
+    return currentPoints
+  }
+
+  return sanitizedCandidate
+}
+
+function pruneWrinkles(points: VectorPoint[], tolerance: number) {
+  if (points.length < 4) return points
+  const pruned: VectorPoint[] = []
+
+  for (let index = 0; index < points.length; index += 1) {
+    const previous = points[(index - 1 + points.length) % points.length]
+    const current = points[index]
+    const next = points[(index + 1) % points.length]
+    const span = distance(previous, next)
+    const legA = distance(previous, current)
+    const legB = distance(current, next)
+    const deviation = pointToSegmentDistance(current, previous, next)
+
+    if (
+      span > 0
+      && legA <= tolerance * 1.8
+      && legB <= tolerance * 1.8
+      && deviation <= tolerance
+    ) {
+      continue
+    }
+
+    pruned.push(current)
+  }
+
+  return pruned.length >= 3 ? pruned : points
+}
+
+function simplifyClosedLoop(points: VectorPoint[], tolerance: number) {
+  if (points.length < 4) return points
+  const center = points.reduce((accumulator, point) => ({
+    x: accumulator.x + point.x / points.length,
+    y: accumulator.y + point.y / points.length,
+  }), { x: 0, y: 0 })
+  let anchorIndex = 0
+  let maxDistanceFromCenter = -1
+
+  points.forEach((point, index) => {
+    const currentDistance = distance(point, center)
+    if (currentDistance > maxDistanceFromCenter) {
+      maxDistanceFromCenter = currentDistance
+      anchorIndex = index
+    }
+  })
+
+  const rotated = points.slice(anchorIndex).concat(points.slice(0, anchorIndex))
+  const simplified = simplifyPolyline(
+    [...rotated, rotated[0]],
+    tolerance,
+  ).slice(0, -1)
+
+  return simplified.length >= 3 ? sanitizeLoop(simplified) : points
+}
+
+function simplifyPolyline(points: VectorPoint[], tolerance: number) {
+  if (points.length <= 2) return points
+  const first = points[0]
+  const last = points[points.length - 1]
+  let maxDistance = -1
+  let splitIndex = -1
+
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const currentDistance = pointToSegmentDistance(points[index], first, last)
+    if (currentDistance > maxDistance) {
+      maxDistance = currentDistance
+      splitIndex = index
+    }
+  }
+
+  if (maxDistance <= tolerance || splitIndex === -1) {
+    return [first, last]
+  }
+
+  const left = simplifyPolyline(points.slice(0, splitIndex + 1), tolerance)
+  const right = simplifyPolyline(points.slice(splitIndex), tolerance)
+  return [...left.slice(0, -1), ...right]
+}
+
+function pointToSegmentDistance(point: VectorPoint, start: VectorPoint, end: VectorPoint) {
+  const segmentX = end.x - start.x
+  const segmentY = end.y - start.y
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY
+
+  if (lengthSquared <= 1e-12) {
+    return distance(point, start)
+  }
+
+  const projection = clamp(
+    ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) / lengthSquared,
+    0,
+    1,
+  )
+  const projectedPoint = {
+    x: start.x + segmentX * projection,
+    y: start.y + segmentY * projection,
+  }
+
+  return distance(point, projectedPoint)
 }
 
 function dedupeByDistance(points: VectorPoint[], minDistance: number) {
@@ -1513,60 +1974,57 @@ function buildPreviewAssets(
   settings: BaseplateSettings,
 ) {
   return {
-    lineartDataUrl: renderPreviewCanvas(boardWidthMm, boardHeightMm, (context) => {
-      context.fillStyle = settings.lineColor
-      fillLoops(context, lineLoops)
-    }),
-    baseplateDataUrl: renderPreviewCanvas(boardWidthMm, boardHeightMm, (context) => {
-      context.fillStyle = settings.baseColor
-      fillLoops(context, baseLoops)
-      context.globalAlpha = 0.22
-      context.fillStyle = settings.lineColor
-      fillLoops(context, lineLoops)
-      context.globalAlpha = 1
-    }),
-    compositeDataUrl: renderPreviewCanvas(boardWidthMm, boardHeightMm, (context) => {
-      context.fillStyle = settings.baseColor
-      fillLoops(context, baseLoops)
-      context.fillStyle = settings.lineColor
-      fillLoops(context, lineLoops)
-    }),
+    lineartDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      { id: 'lineart', fill: settings.lineColor, loops: lineLoops },
+    ]),
+    baseplateDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      { id: 'baseplate', fill: settings.baseColor, loops: baseLoops },
+      { id: 'lineart-ghost', fill: settings.lineColor, loops: lineLoops, opacity: 0.22 },
+    ]),
+    compositeDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      { id: 'baseplate', fill: settings.baseColor, loops: baseLoops },
+      { id: 'lineart', fill: settings.lineColor, loops: lineLoops },
+    ]),
   }
 }
 
-function renderPreviewCanvas(
+function buildPreviewSvgDataUrl(
   boardWidthMm: number,
   boardHeightMm: number,
-  paint: (context: CanvasRenderingContext2D) => void,
+  layers: Array<{
+    id: string
+    fill: string
+    loops: VectorLoop[]
+    opacity?: number
+  }>,
 ) {
-  const pixelsPerMm = Math.max(6, Math.floor(PREVIEW_MAX_PX / Math.max(boardWidthMm, boardHeightMm, 1)))
-  const paddingPx = 20
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.ceil(boardWidthMm * pixelsPerMm) + paddingPx * 2)
-  canvas.height = Math.max(1, Math.ceil(boardHeightMm * pixelsPerMm) + paddingPx * 2)
-  const context = canvas.getContext('2d')
-  if (!context) {
-    throw new Error('无法初始化预览画布')
-  }
-
-  context.clearRect(0, 0, canvas.width, canvas.height)
-  context.translate(paddingPx, paddingPx)
-  context.scale(pixelsPerMm, pixelsPerMm)
-  paint(context)
-
-  return canvas.toDataURL('image/png')
+  const svg = buildPreviewSvgDocument(boardWidthMm, boardHeightMm, layers)
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`
 }
 
-function fillLoops(context: CanvasRenderingContext2D, loops: VectorLoop[]) {
-  context.beginPath()
-  loops.forEach((loop) => {
-    const [first, ...rest] = loop.points
-    if (!first) return
-    context.moveTo(first.x, first.y)
-    rest.forEach((point) => context.lineTo(point.x, point.y))
-    context.closePath()
-  })
-  context.fill('nonzero')
+function buildPreviewSvgDocument(
+  boardWidthMm: number,
+  boardHeightMm: number,
+  layers: Array<{
+    id: string
+    fill: string
+    loops: VectorLoop[]
+    opacity?: number
+  }>,
+) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${boardWidthMm}mm" height="${boardHeightMm}mm" viewBox="0 0 ${formatNumber(boardWidthMm)} ${formatNumber(boardHeightMm)}">`,
+    ...layers
+      .map((layer) => {
+        const path = loopsToSvgPath(layer.loops)
+        if (!path) return ''
+        const opacityAttribute = layer.opacity === undefined ? '' : ` opacity="${formatNumber(layer.opacity)}"`
+        return `  <g id="${layer.id}" fill="${layer.fill}"${opacityAttribute}><path d="${path}" /></g>`
+      })
+      .filter(Boolean),
+    '</svg>',
+  ].join('\n')
 }
 
 function getLoopBounds(loops: VectorLoop[]): Bounds {
@@ -1678,6 +2136,64 @@ function loopsToSvgPath(loops: VectorLoop[]) {
     })
     .filter(Boolean)
     .join(' ')
+}
+
+function paintMaskStroke(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  pixelsPerMm: number,
+  points: VectorPoint[],
+  radiusMm: number,
+  fillValue: 0 | 1,
+) {
+  if (!points.length) {
+    return
+  }
+
+  const radiusPx = Math.max(1, Math.round(radiusMm * pixelsPerMm))
+  const pixelPoints = points.map((point) => ({
+    x: point.x * pixelsPerMm,
+    y: point.y * pixelsPerMm,
+  }))
+  const samples: VectorPoint[] = []
+
+  pixelPoints.forEach((point, index) => {
+    samples.push(point)
+    const next = pixelPoints[index + 1]
+    if (!next) return
+
+    const distancePx = distance(point, next)
+    const stepPx = Math.max(1, radiusPx * 0.35)
+    const steps = Math.max(1, Math.ceil(distancePx / stepPx))
+    for (let step = 1; step < steps; step += 1) {
+      const ratio = step / steps
+      samples.push({
+        x: point.x + (next.x - point.x) * ratio,
+        y: point.y + (next.y - point.y) * ratio,
+      })
+    }
+  })
+
+  samples.forEach((point) => {
+    const centerX = point.x
+    const centerY = point.y
+    const minX = Math.max(0, Math.floor(centerX - radiusPx))
+    const maxX = Math.min(width - 1, Math.ceil(centerX + radiusPx))
+    const minY = Math.max(0, Math.floor(centerY - radiusPx))
+    const maxY = Math.min(height - 1, Math.ceil(centerY + radiusPx))
+
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const deltaX = x + 0.5 - centerX
+        const deltaY = y + 0.5 - centerY
+        if (deltaX * deltaX + deltaY * deltaY > radiusPx * radiusPx) {
+          continue
+        }
+        mask[y * width + x] = fillValue
+      }
+    }
+  })
 }
 
 function extrudeLoopsToMesh(loops: VectorLoop[], zStart: number, height: number): MeshData {
@@ -2288,6 +2804,35 @@ function sanitizeLayerName(layerName: string) {
 
 function dxfPair(code: number, value: string) {
   return `${String(code).padStart(3, ' ')}\n${value}`
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  const combined = new Uint8Array(totalLength)
+  let offset = 0
+  chunks.forEach((chunk) => {
+    combined.set(chunk, offset)
+    offset += chunk.byteLength
+  })
+  return combined
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value)
+  })
+  return btoa(binary)
+}
+
+function hexColorToLinearFactor(color: string) {
+  const rgb = hexToRgb(color) ?? { r: 255, g: 255, b: 255 }
+  return [rgb.r, rgb.g, rgb.b].map((channel) => {
+    const normalized = channel / 255
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4
+  })
 }
 
 function formatNumber(value: number) {

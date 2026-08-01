@@ -1,6 +1,7 @@
-import { LoaderCircle, MoveDiagonal2, Pipette } from 'lucide-react'
-import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
+import { Eraser, Hand, LoaderCircle, MoveDiagonal2, PenLine, Pipette, RotateCcw } from 'lucide-react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ThreeDModelViewer } from '@/components/ThreeDModelViewer'
 import type {
   BaseplateSettings,
   ExtrudeSettings,
@@ -10,6 +11,7 @@ import type {
   VectorLoop,
   VectorPoint,
 } from '@/types/generator'
+import { clamp } from '@/utils/color'
 
 interface PreviewCanvasProps {
   sourceImage: SourceImage | null
@@ -20,8 +22,20 @@ interface PreviewCanvasProps {
   targetColor: string
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
+  hasLineartEdits: boolean
+  viewResetKey: string
+  onApplyLineartStroke: (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => void
+  onResetLineartEdits: () => void
   onPickTargetColor: (color: string) => void
 }
+
+const DEFAULT_VIEW_TRANSFORM = {
+  scale: 1,
+  panX: 0,
+  panY: 0,
+}
+
+type LineartTool = 'pan' | 'brush' | 'eraser'
 
 export function PreviewCanvas({
   sourceImage,
@@ -32,31 +46,41 @@ export function PreviewCanvas({
   targetColor,
   baseplateSettings,
   extrudeSettings,
+  hasLineartEdits,
+  viewResetKey,
+  onApplyLineartStroke,
+  onResetLineartEdits,
   onPickTargetColor,
 }: PreviewCanvasProps) {
   const imageRef = useRef<HTMLImageElement | null>(null)
+  const vectorSvgRef = useRef<SVGSVGElement | null>(null)
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const vectorFrameRef = useRef<HTMLDivElement | null>(null)
   const interactionRef = useRef<{
-    mode: 'pan' | 'pick' | 'rotate' | null
+    mode: 'pan' | 'pick' | 'brush' | 'eraser' | null
     pointerId: number | null
     lastX: number
     lastY: number
+    strokePoints: VectorPoint[]
   }>({
     mode: null,
     pointerId: null,
     lastX: 0,
     lastY: 0,
+    strokePoints: [],
   })
   const [isPicking, setIsPicking] = useState(false)
   const [draftPickedColor, setDraftPickedColor] = useState<string | null>(null)
+  const [lineartTool, setLineartTool] = useState<LineartTool>('pan')
+  const [brushSizeMm, setBrushSizeMm] = useState(1.2)
+  const [liveStrokePoints, setLiveStrokePoints] = useState<VectorPoint[]>([])
+  const [brushCursorPoint, setBrushCursorPoint] = useState<VectorPoint | null>(null)
   const [viewTransform, setViewTransform] = useState({
-    scale: 1,
-    panX: 0,
-    panY: 0,
-    rotateX: 18,
-    rotateZ: -10,
+    ...DEFAULT_VIEW_TRANSFORM,
   })
+  const [vectorFrameSize, setVectorFrameSize] = useState({ width: 0, height: 0 })
+  const isThreeDimensionalPreview = previewMode === '3D预览'
 
   useEffect(() => {
     if (!sourceImage) {
@@ -91,38 +115,121 @@ export function PreviewCanvas({
   }, [isPicking, targetColor, previewMode])
 
   useEffect(() => {
+    if (previewMode !== '线稿' && lineartTool !== 'pan') {
+      setLineartTool('pan')
+      setLiveStrokePoints([])
+      setBrushCursorPoint(null)
+    }
+  }, [lineartTool, previewMode])
+
+  useEffect(() => {
+    if (lineartTool === 'pan') {
+      setLiveStrokePoints([])
+      setBrushCursorPoint(null)
+    }
+  }, [lineartTool])
+
+  useEffect(() => {
     setViewTransform({
-      scale: 1,
-      panX: 0,
-      panY: 0,
-      rotateX: 18,
-      rotateZ: -10,
+      ...DEFAULT_VIEW_TRANSFORM,
     })
     interactionRef.current = {
       mode: null,
       pointerId: null,
       lastX: 0,
       lastY: 0,
+      strokePoints: [],
     }
-  }, [artwork, previewMode, sourceImage?.dataUrl])
+    setLiveStrokePoints([])
+    setBrushCursorPoint(null)
+  }, [viewResetKey])
 
   const src = (() => {
     if (!artwork) return null
     if (previewMode === '原图') return sourceImage?.dataUrl ?? artwork.previews.lineartDataUrl
-    if (previewMode === '线稿') return artwork.previews.lineartDataUrl
-    if (previewMode === '底板预览') return artwork.previews.baseplateDataUrl
-    if (previewMode === '3D预览') return null
-    return artwork.previews.compositeDataUrl
+    return null
   })()
+  const isRasterPreview = previewMode === '原图' && Boolean(sourceImage)
   const canPickColor = Boolean(sourceImage && previewMode === '原图' && !processing)
   const displayColor = draftPickedColor ?? targetColor
-  const scene3d = useMemo(() => {
-    if (!artwork || previewMode !== '3D预览') {
-      return null
+  const vectorScene = useMemo(
+    () => (artwork && !isRasterPreview && !isThreeDimensionalPreview
+      ? buildVectorPreviewScene(artwork, previewMode, baseplateSettings)
+      : null),
+    [artwork, baseplateSettings, isRasterPreview, isThreeDimensionalPreview, previewMode],
+  )
+  const vectorViewBox = useMemo(
+    () => (vectorScene
+      ? buildVectorViewBox(vectorScene.viewWidth, vectorScene.viewHeight, vectorFrameSize, viewTransform)
+      : null),
+    [vectorFrameSize, vectorScene, viewTransform],
+  )
+  const hasPreviewContent = Boolean(src || vectorScene)
+  const effectiveHasPreviewContent = isThreeDimensionalPreview ? Boolean(artwork) : hasPreviewContent
+  const canEditLineart = previewMode === '线稿' && Boolean(vectorScene) && !processing
+
+  const zoomViewport = (clientX: number, clientY: number, deltaY: number) => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const rect = viewport.getBoundingClientRect()
+    const pointerX = clientX - rect.left - rect.width / 2
+    const pointerY = clientY - rect.top - rect.height / 2
+
+    setViewTransform((current) => {
+      const nextScale = clamp(current.scale * (deltaY < 0 ? 1.12 : 0.9), 0.2, 16)
+      const scaleRatio = nextScale / current.scale
+      return {
+        ...current,
+        scale: nextScale,
+        panX: pointerX - (pointerX - current.panX) * scaleRatio,
+        panY: pointerY - (pointerY - current.panY) * scaleRatio,
+      }
+    })
+  }
+
+  useEffect(() => {
+    if (isThreeDimensionalPreview) {
+      return
     }
 
-    return buildThreeDimensionalPreview(artwork, baseplateSettings, extrudeSettings)
-  }, [artwork, baseplateSettings, extrudeSettings, previewMode])
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      zoomViewport(event.clientX, event.clientY, event.deltaY)
+    }
+
+    viewport.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      viewport.removeEventListener('wheel', handleWheel)
+    }
+  }, [isThreeDimensionalPreview])
+
+  useEffect(() => {
+    const frame = vectorFrameRef.current
+    if (!frame || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const updateSize = () => {
+      const rect = frame.getBoundingClientRect()
+      setVectorFrameSize({
+        width: rect.width,
+        height: rect.height,
+      })
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(() => updateSize())
+    observer.observe(frame)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [vectorScene, previewMode])
 
   const sampleColor = (clientX: number, clientY: number) => {
     const image = imageRef.current
@@ -144,17 +251,47 @@ export function PreviewCanvas({
     return rgbToHex(pixel[0], pixel[1], pixel[2])
   }
 
+  const getVectorPointFromClient = (clientX: number, clientY: number) => {
+    const svg = vectorSvgRef.current
+    if (!svg) return null
+
+    const rect = svg.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null
+
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return null
+
+    const point = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse())
+    return {
+      x: point.x,
+      y: point.y,
+    }
+  }
+
   const handleViewportPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (isThreeDimensionalPreview) {
+      return
+    }
+
     const viewport = viewportRef.current
     if (!viewport) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest('[data-canvas-control="true"]')) {
+      return
+    }
 
-    let mode: 'pan' | 'pick' | 'rotate' | null = null
-    if (previewMode === '3D预览' && event.button === 2) {
-      mode = 'rotate'
-    } else if (event.button === 0 && canPickColor && event.shiftKey) {
+    let mode: 'pan' | 'pick' | 'brush' | 'eraser' | null = null
+    if (event.button === 0 && canPickColor && event.shiftKey) {
       mode = 'pick'
       setIsPicking(true)
       setDraftPickedColor(sampleColor(event.clientX, event.clientY))
+    } else if (event.button === 0 && canEditLineart && lineartTool !== 'pan') {
+      const point = getVectorPointFromClient(event.clientX, event.clientY)
+      if (!point) return
+      mode = lineartTool
+      setLiveStrokePoints([point])
+      setBrushCursorPoint(point)
     } else if (event.button === 0) {
       mode = 'pan'
     }
@@ -167,10 +304,17 @@ export function PreviewCanvas({
       pointerId: event.pointerId,
       lastX: event.clientX,
       lastY: event.clientY,
+      strokePoints: mode === 'brush' || mode === 'eraser'
+        ? [getVectorPointFromClient(event.clientX, event.clientY)].filter(Boolean) as VectorPoint[]
+        : [],
     }
   }
 
   const handleViewportPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (canEditLineart && lineartTool !== 'pan') {
+      setBrushCursorPoint(getVectorPointFromClient(event.clientX, event.clientY))
+    }
+
     const interaction = interactionRef.current
     if (interaction.pointerId !== event.pointerId || !interaction.mode) {
       return
@@ -190,17 +334,17 @@ export function PreviewCanvas({
       return
     }
 
-    if (interaction.mode === 'rotate') {
-      setViewTransform((current) => ({
-        ...current,
-        rotateX: clamp(current.rotateX - deltaY * 0.18, -65, 65),
-        rotateZ: current.rotateZ + deltaX * 0.3,
-      }))
+    if (interaction.mode === 'pick') {
+      setDraftPickedColor(sampleColor(event.clientX, event.clientY))
       return
     }
 
-    if (interaction.mode === 'pick') {
-      setDraftPickedColor(sampleColor(event.clientX, event.clientY))
+    if (interaction.mode === 'brush' || interaction.mode === 'eraser') {
+      const point = getVectorPointFromClient(event.clientX, event.clientY)
+      if (!point) return
+      interaction.strokePoints.push(point)
+      setLiveStrokePoints([...interaction.strokePoints])
+      setBrushCursorPoint(point)
     }
   }
 
@@ -222,6 +366,13 @@ export function PreviewCanvas({
       }
     }
 
+    if ((interaction.mode === 'brush' || interaction.mode === 'eraser') && interaction.strokePoints.length) {
+      onApplyLineartStroke(interaction.strokePoints, interaction.mode, brushSizeMm)
+      setLiveStrokePoints([])
+      const point = getVectorPointFromClient(event.clientX, event.clientY)
+      setBrushCursorPoint(point)
+    }
+
     if (viewport?.hasPointerCapture(event.pointerId)) {
       viewport.releasePointerCapture(event.pointerId)
     }
@@ -230,50 +381,38 @@ export function PreviewCanvas({
       pointerId: null,
       lastX: 0,
       lastY: 0,
+      strokePoints: [],
     }
-  }
-
-  const handleViewportWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    const viewport = viewportRef.current
-    if (!viewport) return
-    event.preventDefault()
-
-    const rect = viewport.getBoundingClientRect()
-    const pointerX = event.clientX - rect.left - rect.width / 2
-    const pointerY = event.clientY - rect.top - rect.height / 2
-
-    setViewTransform((current) => {
-      const nextScale = clamp(current.scale * (event.deltaY < 0 ? 1.12 : 0.9), 0.35, 6)
-      const scaleRatio = nextScale / current.scale
-      return {
-        ...current,
-        scale: nextScale,
-        panX: pointerX - (pointerX - current.panX) * scaleRatio,
-        panY: pointerY - (pointerY - current.panY) * scaleRatio,
-      }
-    })
   }
 
   const handleViewportContextMenu = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (previewMode === '3D预览') {
-      event.preventDefault()
+    event.preventDefault()
+  }
+
+  const handleViewportPointerLeave = () => {
+    if (lineartTool !== 'pan') {
+      setLiveStrokePoints([])
+      setBrushCursorPoint(null)
     }
   }
 
-  const contentTransform = previewMode === '3D预览'
-    ? `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale}) perspective(1200px) rotateX(${viewTransform.rotateX}deg) rotateZ(${viewTransform.rotateZ}deg)`
-    : `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale})`
-  const interactionHint = previewMode === '3D预览'
-    ? '左键拖动画布，滚轮缩放，右键旋转视角'
+  const interactionHint = isThreeDimensionalPreview
+    ? '3D预览支持拖动旋转与滚轮缩放'
     : canPickColor
-      ? '左键拖动画布，滚轮缩放，Shift+拖动取色'
+    ? '左键拖动画布，滚轮缩放，Shift+拖动取色'
+    : canEditLineart
+      ? lineartTool === 'pan'
+        ? '滚轮缩放；线稿模式可切换拖动、画笔和橡皮擦'
+        : '当前正在直接修改线稿矢量轮廓'
       : '左键拖动画布，滚轮缩放'
   const contentCursor = isPicking
     ? 'crosshair'
-    : previewMode === '3D预览'
-      ? 'grab'
-      : canPickColor
-        ? 'grab'
+    : isThreeDimensionalPreview
+      ? 'default'
+    : canEditLineart && lineartTool === 'brush'
+      ? 'none'
+      : canEditLineart && lineartTool === 'eraser'
+        ? 'none'
         : 'grab'
 
   return (
@@ -291,19 +430,20 @@ export function PreviewCanvas({
 
       <div
         ref={viewportRef}
-        className="relative flex h-[clamp(420px,62vh,720px)] items-center justify-center overflow-hidden bg-checker p-5 xl:p-6"
+        className={`relative flex h-[clamp(420px,62vh,720px)] items-center justify-center overflow-hidden bg-checker ${isThreeDimensionalPreview ? 'p-0' : 'p-5 xl:p-6'}`}
         onPointerDown={handleViewportPointerDown}
         onPointerMove={handleViewportPointerMove}
         onPointerUp={handleViewportPointerEnd}
         onPointerCancel={handleViewportPointerEnd}
-        onWheel={handleViewportWheel}
+        onPointerLeave={handleViewportPointerLeave}
         onContextMenu={handleViewportContextMenu}
+        style={{ overscrollBehavior: 'contain' }}
       >
-        {!src && !scene3d && !processing && (
+        {!effectiveHasPreviewContent && !processing && (
           <div className="max-w-md rounded-[28px] border border-white/80 bg-white/90 p-8 text-center shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="text-sm font-semibold text-slate-950">先上传一张图片</div>
             <p className="mt-3 text-sm leading-6 text-slate-500">
-              左侧上传图片或导入 DXF 后，这里会显示线稿、底板、分层和 3D 预览。整个工作流都在浏览器本地完成，不依赖后端。
+              左侧上传图片或导入 DXF 后，这里会显示线稿、底板和分层预览。整个工作流都在浏览器本地完成，不依赖后端。
             </p>
           </div>
         )}
@@ -317,83 +457,130 @@ export function PreviewCanvas({
           </div>
         )}
 
-        {(src || scene3d) && !processing && (
+        {effectiveHasPreviewContent && !processing && (
           <div
-            className="flex h-full w-full items-center justify-center touch-none"
-            style={{
-              transform: contentTransform,
-              transformOrigin: 'center center',
-              willChange: 'transform',
-              cursor: contentCursor,
-            }}
+            className={`touch-none ${isThreeDimensionalPreview ? 'h-full w-full' : 'flex h-full w-full items-center justify-center'}`}
+            style={{ cursor: contentCursor }}
           >
-            {src && (
-              <img
-                ref={imageRef}
-                src={src}
-                alt="线稿底板预览"
-                draggable={false}
-                className="max-h-[calc(100%-8px)] max-w-full rounded-[24px] border border-slate-200 bg-white object-contain shadow-[0_16px_56px_rgba(15,23,42,0.12)] select-none"
+            {isThreeDimensionalPreview && artwork && (
+              <ThreeDModelViewer
+                artwork={artwork}
+                baseplateSettings={baseplateSettings}
+                extrudeSettings={extrudeSettings}
               />
             )}
 
-            {scene3d && (
-              <svg
-                viewBox={`0 0 ${scene3d.viewWidth} ${scene3d.viewHeight}`}
-                role="img"
-                aria-label="3D 立体预览"
-                className="h-full max-h-[calc(100%-8px)] w-full max-w-full rounded-[24px] border border-slate-200 bg-[radial-gradient(circle_at_top,_#ffffff,_#eef4fb_58%,_#dbe7f5)] object-contain shadow-[0_16px_56px_rgba(15,23,42,0.12)]"
+            {isRasterPreview && (
+              <div
+                style={{
+                  transform: `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale})`,
+                  transformOrigin: 'center center',
+                  willChange: 'transform',
+                }}
               >
-            <defs>
-              <linearGradient id="preview-floor" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
-                <stop offset="100%" stopColor="#d9e7f6" stopOpacity="0.9" />
-              </linearGradient>
-            </defs>
-            <rect x="0" y="0" width={scene3d.viewWidth} height={scene3d.viewHeight} fill="transparent" />
-            <ellipse
-              cx={scene3d.viewWidth / 2}
-              cy={scene3d.viewHeight - 32}
-              rx={Math.max(40, scene3d.viewWidth * 0.24)}
-              ry={18}
-              fill="#94a3b8"
-              opacity="0.16"
-            />
-            <path d={scene3d.floorPath} fill="url(#preview-floor)" opacity="0.6" />
-            {scene3d.baseSidePaths.map((path, index) => (
-              <path key={`base-side-${index}`} d={path} fill={scene3d.baseSideColor} />
-            ))}
-            <path d={scene3d.baseTopPath} fill={baseplateSettings.baseColor} stroke={scene3d.edgeColor} strokeWidth="1.2" />
-            {scene3d.lineSidePaths.map((path, index) => (
-              <path key={`line-side-${index}`} d={path} fill={scene3d.lineSideColor} />
-            ))}
-            <path d={scene3d.lineTopPath} fill={baseplateSettings.lineColor} stroke={scene3d.edgeColor} strokeWidth="1" />
-              </svg>
+                <img
+                  ref={imageRef}
+                  src={src}
+                  alt="线稿底板预览"
+                  draggable={false}
+                  className="max-h-[calc(100%-8px)] max-w-full object-contain select-none"
+                />
+              </div>
+            )}
+
+            {!isRasterPreview && vectorScene && (
+              <div
+                ref={vectorFrameRef}
+                key={`${previewMode}-${vectorScene.viewWidth}-${vectorScene.viewHeight}-${vectorScene.layers.map((layer) => layer.id).join('-')}`}
+                className="preview-vector-shell h-full max-h-[calc(100%-8px)] w-full max-w-full select-none"
+                style={{
+                  aspectRatio: `${vectorScene.viewWidth} / ${vectorScene.viewHeight}`,
+                }}
+              >
+                <svg
+                  ref={vectorSvgRef}
+                  viewBox={formatVectorViewBox(vectorViewBox ?? {
+                    minX: 0,
+                    minY: 0,
+                    width: vectorScene.viewWidth,
+                    height: vectorScene.viewHeight,
+                  })}
+                  aria-label="线稿底板矢量预览"
+                  className="block h-full w-full overflow-visible"
+                  preserveAspectRatio="xMidYMid meet"
+                  shapeRendering="geometricPrecision"
+                >
+                  {vectorScene.layers.map((layer) => (
+                    <g
+                      key={layer.id}
+                      fill={layer.fill}
+                      opacity={layer.opacity}
+                    >
+                      <path d={layer.path} fillRule="evenodd" />
+                    </g>
+                  ))}
+                  {canEditLineart && liveStrokePoints.length > 1 && lineartTool !== 'pan' && (
+                    <polyline
+                      points={liveStrokePoints.map((point) => `${formatVectorNumber(point.x)},${formatVectorNumber(point.y)}`).join(' ')}
+                      fill="none"
+                      stroke={lineartTool === 'eraser' ? '#ef4444' : '#0088ff'}
+                      strokeWidth={formatVectorNumber(brushSizeMm * 2)}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={0.34}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  {canEditLineart && brushCursorPoint && lineartTool !== 'pan' && (
+                    <circle
+                      cx={formatVectorNumber(brushCursorPoint.x)}
+                      cy={formatVectorNumber(brushCursorPoint.y)}
+                      r={formatVectorNumber(brushSizeMm)}
+                      fill="none"
+                      stroke={lineartTool === 'eraser' ? '#ef4444' : '#0088ff'}
+                      strokeWidth="0.45"
+                      strokeDasharray={lineartTool === 'eraser' ? '1.2 0.9' : undefined}
+                      opacity={0.92}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                </svg>
+              </div>
             )}
           </div>
         )}
 
         {artwork && !processing && (
           <div className="absolute bottom-5 left-5 flex flex-wrap gap-2">
-            <div className="rounded-full bg-white/92 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+            <div className="rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               画板 {artwork.boardWidthMm.toFixed(1)} × {artwork.boardHeightMm.toFixed(1)} mm
             </div>
-            <div className="rounded-full bg-white/92 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+            <div className="rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               线稿轮廓 {artwork.stats.lineLoopCount} 组
             </div>
-            <div className="rounded-full bg-white/92 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+            <div className="rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               来源 {artwork.sourceKind === 'image' ? '图片' : 'DXF'}
             </div>
           </div>
         )}
 
-        {sourceImage && previewMode !== '3D预览' && !processing && (
-          <div className="absolute right-5 top-5 flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/92 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+        {sourceImage && !processing && (
+          <div
+            className="absolute right-5 top-5 flex flex-wrap items-center gap-2"
+            data-canvas-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="inline-flex items-center gap-2 rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               <Pipette className="h-3.5 w-3.5" />
-              {previewMode === '原图' ? interactionHint : '切到原图后可 Shift+拖动取色'}
+              {previewMode === '原图'
+                ? interactionHint
+                : canEditLineart
+                  ? interactionHint
+                  : isThreeDimensionalPreview
+                    ? interactionHint
+                    : '切到原图后可 Shift+拖动取色'}
             </div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/92 px-2 py-1.5 text-[11px] font-medium text-slate-700 shadow">
+            <div className="inline-flex items-center gap-2 rounded-full bg-[#f8fafc] px-2 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               <span
                 className="h-4 w-4 rounded-full border border-slate-200"
                 style={{ backgroundColor: displayColor }}
@@ -403,12 +590,68 @@ export function PreviewCanvas({
           </div>
         )}
 
-        {previewMode === '3D预览' && !processing && (
-          <div className="absolute right-5 top-5 flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/92 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow">
-              <MoveDiagonal2 className="h-3.5 w-3.5" />
-              {interactionHint}
+        {canEditLineart && (
+          <div
+            className="absolute left-5 top-5 flex flex-wrap items-center gap-2"
+            data-canvas-control="true"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center gap-1 rounded-full bg-[#f8fafc] p-1 text-[11px] font-medium text-slate-700 shadow-sm">
+              {[
+                { value: 'pan' as const, label: '拖动', icon: Hand },
+                { value: 'brush' as const, label: '画笔', icon: PenLine },
+                { value: 'eraser' as const, label: '橡皮擦', icon: Eraser },
+              ].map((tool) => {
+                const Icon = tool.icon
+                const active = lineartTool === tool.value
+                return (
+                  <button
+                    key={tool.value}
+                    type="button"
+                    onClick={() => setLineartTool(tool.value)}
+                    className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 transition ${
+                      active ? 'bg-[#0088ff] text-white' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {tool.label}
+                  </button>
+                )
+              })}
             </div>
+            <div className="flex items-center gap-3 rounded-full bg-[#f8fafc] px-3 py-2 text-[11px] font-medium text-slate-700 shadow-sm">
+              <span className="whitespace-nowrap">画笔粗细 {brushSizeMm.toFixed(1)}mm</span>
+              <svg className="h-7 w-7 shrink-0 overflow-visible" viewBox="0 0 28 28" aria-hidden="true">
+                <circle
+                  cx="14"
+                  cy="14"
+                  r={Math.min(11, Math.max(3, brushSizeMm * 4))}
+                  fill="none"
+                  stroke={lineartTool === 'eraser' ? '#ef4444' : '#0088ff'}
+                  strokeWidth="1.5"
+                  strokeDasharray={lineartTool === 'eraser' ? '2.5 2' : undefined}
+                />
+              </svg>
+              <input
+                type="range"
+                min="0.2"
+                max="4"
+                step="0.1"
+                value={brushSizeMm}
+                onChange={(event) => setBrushSizeMm(Number(event.target.value))}
+                className="h-1.5 w-36 cursor-pointer appearance-none rounded-full bg-slate-200 accent-[#0088ff]"
+              />
+            </div>
+            {hasLineartEdits && (
+              <button
+                type="button"
+                onClick={onResetLineartEdits}
+                className="inline-flex items-center gap-1 rounded-full bg-[#f8fafc] px-3 py-2 text-[11px] font-medium text-slate-700 shadow-sm transition hover:bg-slate-100"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                重置修线
+              </button>
+            )}
           </div>
         )}
 
@@ -426,131 +669,106 @@ function rgbToHex(r: number, g: number, b: number) {
   return `#${[r, g, b].map((value) => value.toString(16).padStart(2, '0')).join('')}`
 }
 
-function buildThreeDimensionalPreview(
+function buildVectorPreviewScene(
   artwork: ProcessedArtwork,
+  previewMode: PreviewMode,
   baseplateSettings: BaseplateSettings,
-  extrudeSettings: ExtrudeSettings,
 ) {
-  const allPoints = [...artwork.baseLoops, ...artwork.lineLoops].flatMap((loop) => loop.points)
-  if (!allPoints.length) {
-    return null
-  }
+  const layers: Array<{
+    id: string
+    fill: string
+    opacity?: number
+    path: string
+  }> = []
 
-  const bounds = getBounds(allPoints)
-  const scale = Math.min(
-    560 / Math.max(bounds.width || 1, 1),
-    360 / Math.max(bounds.height || 1, 1),
-  )
-  const originX = 130
-  const originY = 320
-  const baseRaise = Math.max(8, extrudeSettings.baseThicknessMm * 28)
-  const lineRaise = Math.max(6, extrudeSettings.lineThicknessMm * 28)
-
-  const projectTop = (point: VectorPoint, zMm: number) => {
-    const normalizedX = (point.x - bounds.minX) * scale
-    const normalizedY = (point.y - bounds.minY) * scale
-    return {
-      x: originX + normalizedX - normalizedY * 0.52,
-      y: originY + normalizedY * 0.34 - zMm * 18,
-    }
-  }
-
-  const buildTopPath = (loops: VectorLoop[], zMm: number) => loops
-    .map((loop) => buildLoopPath(loop, (point) => projectTop(point, zMm)))
-    .join(' ')
-
-  const buildSidePaths = (loops: VectorLoop[], zStartMm: number, zEndMm: number) => loops.flatMap((loop) => {
-    const points = simplifyLoop(loop.points)
-    if (points.length < 2) return []
-
-    return points.slice(0, -1).map((point, index) => {
-      const nextPoint = points[index + 1]
-      const topA = projectTop(point, zEndMm)
-      const topB = projectTop(nextPoint, zEndMm)
-      const bottomA = projectTop(point, zStartMm)
-      const bottomB = projectTop(nextPoint, zStartMm)
-      return `M ${bottomA.x.toFixed(2)} ${bottomA.y.toFixed(2)} L ${bottomB.x.toFixed(2)} ${bottomB.y.toFixed(2)} L ${topB.x.toFixed(2)} ${topB.y.toFixed(2)} L ${topA.x.toFixed(2)} ${topA.y.toFixed(2)} Z`
+  if (previewMode === '原图' || previewMode === '线稿') {
+    layers.push({
+      id: 'lineart',
+      fill: baseplateSettings.lineColor,
+      path: loopsToSvgPath(artwork.lineLoops),
     })
-  })
-
-  const floorWidth = Math.max(320, bounds.width * scale * 0.95)
-  const floorDepth = Math.max(200, bounds.height * scale * 0.55)
-  const floorPath = [
-    `M ${(originX - floorDepth * 0.52 - 36).toFixed(2)} ${(originY + 16).toFixed(2)}`,
-    `L ${(originX + floorWidth - floorDepth * 0.52 + 24).toFixed(2)} ${(originY + 16).toFixed(2)}`,
-    `L ${(originX + floorWidth + 8).toFixed(2)} ${(originY + floorDepth * 0.34 + 28).toFixed(2)}`,
-    `L ${(originX - 52).toFixed(2)} ${(originY + floorDepth * 0.34 + 28).toFixed(2)}`,
-    'Z',
-  ].join(' ')
+  } else if (previewMode === '底板预览') {
+    layers.push({
+      id: 'baseplate',
+      fill: baseplateSettings.baseColor,
+      path: loopsToSvgPath(artwork.baseLoops),
+    })
+    layers.push({
+      id: 'lineart-ghost',
+      fill: baseplateSettings.lineColor,
+      opacity: 0.22,
+      path: loopsToSvgPath(artwork.lineLoops),
+    })
+  } else {
+    layers.push({
+      id: 'baseplate',
+      fill: baseplateSettings.baseColor,
+      path: loopsToSvgPath(artwork.baseLoops),
+    })
+    layers.push({
+      id: 'lineart',
+      fill: baseplateSettings.lineColor,
+      path: loopsToSvgPath(artwork.lineLoops),
+    })
+  }
 
   return {
-    viewWidth: 760,
-    viewHeight: 460,
-    floorPath,
-    baseTopPath: buildTopPath(artwork.baseLoops, extrudeSettings.baseThicknessMm),
-    lineTopPath: buildTopPath(artwork.lineLoops, extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm),
-    baseSidePaths: buildSidePaths(artwork.baseLoops, 0, extrudeSettings.baseThicknessMm),
-    lineSidePaths: buildSidePaths(artwork.lineLoops, extrudeSettings.lineHeightMm, extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm),
-    baseSideColor: shadeHexColor(baseplateSettings.baseColor, -0.18 - baseRaise / 160),
-    lineSideColor: shadeHexColor(baseplateSettings.lineColor, -0.22 - lineRaise / 160),
-    edgeColor: 'rgba(15, 23, 42, 0.28)',
+    viewWidth: artwork.boardWidthMm,
+    viewHeight: artwork.boardHeightMm,
+    layers: layers.filter((layer) => layer.path),
   }
 }
 
-function buildLoopPath(loop: VectorLoop, project: (point: VectorPoint) => { x: number; y: number }) {
-  const [first, ...rest] = loop.points
-  if (!first) return ''
-  const start = project(first)
-  return [
-    `M ${start.x.toFixed(2)} ${start.y.toFixed(2)}`,
-    ...rest.map((point) => {
-      const projected = project(point)
-      return `L ${projected.x.toFixed(2)} ${projected.y.toFixed(2)}`
-    }),
-    'Z',
-  ].join(' ')
-}
+function buildVectorViewBox(
+  viewWidth: number,
+  viewHeight: number,
+  frameSize: { width: number; height: number },
+  viewTransform: typeof DEFAULT_VIEW_TRANSFORM,
+) {
+  const safeScale = clamp(viewTransform.scale, 0.2, 16)
+  const width = viewWidth / safeScale
+  const height = viewHeight / safeScale
 
-function simplifyLoop(points: VectorPoint[]) {
-  if (!points.length) return []
-  const normalized = [...points]
-  const first = normalized[0]
-  const last = normalized[normalized.length - 1]
-  if (!last || first.x !== last.x || first.y !== last.y) {
-    normalized.push(first)
-  }
-  return normalized
-}
+  const frameWidth = Math.max(frameSize.width, 1)
+  const frameHeight = Math.max(frameSize.height, 1)
+  const panXInSceneUnits = (viewTransform.panX * width) / frameWidth
+  const panYInSceneUnits = (viewTransform.panY * height) / frameHeight
 
-function getBounds(points: VectorPoint[]) {
-  const xs = points.map((point) => point.x)
-  const ys = points.map((point) => point.y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
+  const minX = (viewWidth - width) / 2 - panXInSceneUnits
+  const minY = (viewHeight - height) / 2 - panYInSceneUnits
+
   return {
     minX,
     minY,
-    width: maxX - minX,
-    height: maxY - minY,
+    width,
+    height,
   }
 }
 
-function shadeHexColor(hex: string, amount: number) {
-  const normalized = hex.replace('#', '')
-  const channels = normalized.length === 3
-    ? normalized.split('').map((channel) => parseInt(channel + channel, 16))
-    : [
-      parseInt(normalized.slice(0, 2), 16),
-      parseInt(normalized.slice(2, 4), 16),
-      parseInt(normalized.slice(4, 6), 16),
-    ]
+function formatVectorViewBox(bounds: { minX: number; minY: number; width: number; height: number }) {
+  return `${formatVectorNumber(bounds.minX)} ${formatVectorNumber(bounds.minY)} ${formatVectorNumber(bounds.width)} ${formatVectorNumber(bounds.height)}`
+}
 
-  return `#${channels
-    .map((channel) => {
-      const next = Math.round(channel + (amount >= 0 ? (255 - channel) * amount : channel * amount))
-      return Math.max(0, Math.min(255, next)).toString(16).padStart(2, '0')
-    })
-    .join('')}`
+function loopsToSvgPath(loops: VectorLoop[]) {
+  return loops
+    .map((loop) => buildLoopPath(loop.points))
+    .filter(Boolean)
+    .join(' ')
+}
+
+function buildLoopPath(points: VectorPoint[]) {
+  const [first, ...rest] = points
+  if (!first) {
+    return ''
+  }
+
+  return [
+    `M ${formatVectorNumber(first.x)} ${formatVectorNumber(first.y)}`,
+    ...rest.map((point) => `L ${formatVectorNumber(point.x)} ${formatVectorNumber(point.y)}`),
+    'Z',
+  ].join(' ')
+}
+
+function formatVectorNumber(value: number) {
+  return Number(value.toFixed(4)).toString()
 }

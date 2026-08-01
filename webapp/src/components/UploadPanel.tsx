@@ -9,6 +9,7 @@ interface UploadPanelProps {
   importedLineart: ImportedLineart | null
   sourceKind: SourceKind | null
   settings: LineartSettings
+  despeckleLocked?: boolean
   processing: boolean
   onUploadImages: (files: File[]) => void
   onImportDxf: (file: File) => void
@@ -24,6 +25,7 @@ export function UploadPanel({
   importedLineart,
   sourceKind,
   settings,
+  despeckleLocked = false,
   processing,
   onUploadImages,
   onImportDxf,
@@ -254,8 +256,14 @@ export function UploadPanel({
             step={2}
             value={settings.despeckle}
             suffix=""
+            disabled={despeckleLocked}
             onChange={(value) => onUpdateSettings({ despeckle: value })}
           />
+          {despeckleLocked && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
+              当前素材已使用画笔或橡皮擦修线，已自动关闭并锁定“杂点清理”，避免把手工修改冲掉。
+            </div>
+          )}
           <SliderRow
             label="线条宽度"
             min={0}
@@ -332,6 +340,7 @@ function SliderRow({
   step,
   value,
   suffix,
+  disabled,
   onChange,
 }: {
   label: string
@@ -340,6 +349,7 @@ function SliderRow({
   step: number
   value: number
   suffix: string
+  disabled?: boolean
   onChange: (value: number) => void
 }) {
   const [draftValue, setDraftValue] = useState(value)
@@ -369,12 +379,13 @@ function SliderRow({
         max={max}
         step={step}
         value={draftValue}
+        disabled={disabled}
         onChange={(event) => setDraftValue(Number(event.target.value))}
         onMouseUp={commitValue}
         onTouchEnd={commitValue}
         onKeyUp={commitValue}
         onBlur={commitValue}
-        className="h-2 w-full accent-[#0088ff]"
+        className="h-2 w-full accent-[#0088ff] disabled:cursor-not-allowed disabled:opacity-45"
       />
     </label>
   )

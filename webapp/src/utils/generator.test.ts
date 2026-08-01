@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import type { BaseplateSettings, PrintBedSettings, VectorLoop } from '@/types/generator'
-import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildLoopDxf, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText, planPrintBedLayout } from '@/utils/generator'
+import { describe, expect, it, vi } from 'vitest'
+import type { BaseplateSettings, LineartSettings, PrintBedSettings, VectorLoop } from '@/types/generator'
+import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildLoopDxf, buildPreviewModelGltfBlob, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText, planPrintBedLayout, processArtwork } from '@/utils/generator'
 import { unzipSync, strFromU8 } from 'fflate'
 
 const sourceLoops: VectorLoop[] = [
@@ -30,6 +30,17 @@ const printBedSettings: PrintBedSettings = {
   widthMm: 256,
   depthMm: 256,
   spacingMm: 8,
+}
+
+const defaultLineartSettings: LineartSettings = {
+  detail: 100,
+  threshold: 160,
+  targetColor: '#000000',
+  despeckle: 24,
+  strokeWidth: 0.4,
+  smoothing: 36,
+  invert: false,
+  mirror: false,
 }
 
 describe('generator exports', () => {
@@ -66,6 +77,173 @@ describe('generator exports', () => {
       { x: 2, y: 4 },
       { x: 5, y: 3 },
     ])
+  })
+
+  it('builds preview gltf blobs without DOM canvas support', async () => {
+    vi.stubGlobal('document', undefined)
+
+    try {
+      const blob = buildPreviewModelGltfBlob(
+        {
+          baseLoops: sourceLoops,
+          lineLoops: sourceLoops,
+          boardWidthMm: 20,
+          boardHeightMm: 10,
+          pixelsPerMm: 10,
+        },
+        rectangleSettings,
+        {
+          baseThicknessMm: 0.2,
+          lineThicknessMm: 0.2,
+          lineHeightMm: 0.2,
+        },
+      )
+
+      const gltfText = await readBlobText(blob as Blob)
+      const gltf = JSON.parse(gltfText)
+      expect(gltf.asset.version).toBe('2.0')
+      expect(gltf.meshes).toHaveLength(2)
+      expect(gltf.buffers[0].uri).toContain('data:application/octet-stream;base64,')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reduces wrinkle points more aggressively as smoothing increases', async () => {
+    const wrinkledLoop: VectorLoop = {
+      closed: true,
+      points: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0.15 },
+        { x: 4, y: -0.1 },
+        { x: 6, y: 0.18 },
+        { x: 8, y: -0.12 },
+        { x: 10, y: 0 },
+        { x: 10, y: 6 },
+        { x: 8, y: 5.82 },
+        { x: 6, y: 6.14 },
+        { x: 4, y: 5.88 },
+        { x: 2, y: 6.12 },
+        { x: 0, y: 6 },
+      ],
+    }
+
+    const lowSmoothArtwork = await processArtwork({
+      sourceImage: null,
+      importedLineart: {
+        name: 'wrinkled.dxf',
+        widthMm: 10,
+        heightMm: 6,
+        loops: [wrinkledLoop],
+      },
+      lineartSettings: {
+        ...defaultLineartSettings,
+        smoothing: 8,
+      },
+      baseplateSettings: rectangleSettings,
+      extrudeSettings: {
+        baseThicknessMm: 0.2,
+        lineThicknessMm: 0.2,
+        lineHeightMm: 0.2,
+      },
+    })
+    const highSmoothArtwork = await processArtwork({
+      sourceImage: null,
+      importedLineart: {
+        name: 'wrinkled.dxf',
+        widthMm: 10,
+        heightMm: 6,
+        loops: [wrinkledLoop],
+      },
+      lineartSettings: {
+        ...defaultLineartSettings,
+        smoothing: 88,
+      },
+      baseplateSettings: rectangleSettings,
+      extrudeSettings: {
+        baseThicknessMm: 0.2,
+        lineThicknessMm: 0.2,
+        lineHeightMm: 0.2,
+      },
+    })
+
+    expect(highSmoothArtwork.lineLoops[0].points.length).toBeLessThan(lowSmoothArtwork.lineLoops[0].points.length)
+  })
+
+  it('preserves thin line loops while removing wrinkles', async () => {
+    const thinWrinkledLoop: VectorLoop = {
+      closed: true,
+      points: [
+        { x: 0, y: 0 },
+        { x: 1.1, y: 0 },
+        { x: 1.28, y: 1.6 },
+        { x: 1.02, y: 3.2 },
+        { x: 1.3, y: 4.8 },
+        { x: 1.05, y: 6.4 },
+        { x: 1.22, y: 8 },
+        { x: 1.08, y: 9.6 },
+        { x: 1.18, y: 11.2 },
+        { x: 1.1, y: 12 },
+        { x: 0, y: 12 },
+        { x: -0.18, y: 10.4 },
+        { x: 0.08, y: 8.8 },
+        { x: -0.16, y: 7.2 },
+        { x: 0.1, y: 5.6 },
+        { x: -0.14, y: 4 },
+        { x: 0.06, y: 2.2 },
+        { x: -0.12, y: 0.8 },
+      ],
+    }
+
+    const lowSmoothArtwork = await processArtwork({
+      sourceImage: null,
+      importedLineart: {
+        name: 'thin-wrinkled.dxf',
+        widthMm: 1.3,
+        heightMm: 12,
+        loops: [thinWrinkledLoop],
+      },
+      lineartSettings: {
+        ...defaultLineartSettings,
+        smoothing: 8,
+      },
+      baseplateSettings: rectangleSettings,
+      extrudeSettings: {
+        baseThicknessMm: 0.2,
+        lineThicknessMm: 0.2,
+        lineHeightMm: 0.2,
+      },
+    })
+    const highSmoothArtwork = await processArtwork({
+      sourceImage: null,
+      importedLineart: {
+        name: 'thin-wrinkled.dxf',
+        widthMm: 1.3,
+        heightMm: 12,
+        loops: [thinWrinkledLoop],
+      },
+      lineartSettings: {
+        ...defaultLineartSettings,
+        smoothing: 92,
+      },
+      baseplateSettings: rectangleSettings,
+      extrudeSettings: {
+        baseThicknessMm: 0.2,
+        lineThicknessMm: 0.2,
+        lineHeightMm: 0.2,
+      },
+    })
+
+    const lowBounds = getTestLoopBounds(lowSmoothArtwork.lineLoops[0])
+    const highBounds = getTestLoopBounds(highSmoothArtwork.lineLoops[0])
+    const lowArea = getTestLoopArea(lowSmoothArtwork.lineLoops[0])
+    const highArea = getTestLoopArea(highSmoothArtwork.lineLoops[0])
+
+    expect(highSmoothArtwork.lineLoops).toHaveLength(1)
+    expect(highSmoothArtwork.lineLoops[0].points.length).toBeLessThan(lowSmoothArtwork.lineLoops[0].points.length)
+    expect(highBounds.height).toBeGreaterThan(lowBounds.height * 0.9)
+    expect(highBounds.width).toBeGreaterThan(lowBounds.width * 0.72)
+    expect(highArea).toBeGreaterThan(lowArea * 0.78)
   })
 
   it('centers a single item on the configured print bed', () => {
@@ -275,6 +453,8 @@ describe('generator exports', () => {
 
     expect(modelXml).toContain('z="0.2"')
     expect(modelXml).toContain('z="0.4"')
+    expect(modelXml).toContain('x="118"')
+    expect(modelXml).toContain('y="123"')
   })
 
   it('writes default extruder assignments into bambu metadata for single exports', () => {
@@ -381,8 +561,8 @@ describe('generator exports', () => {
     const files = unzipSync(packageBytes)
     const modelXml = strFromU8(files['3D/3dmodel.model'])
 
-    expect(modelXml).toContain('y="8"')
-    expect(modelXml).toContain('y="9"')
+    expect(modelXml).toContain('y="131"')
+    expect(modelXml).toContain('y="132"')
   })
 
   it('builds a combined 3mf package for multiple artworks', () => {
@@ -474,3 +654,31 @@ describe('generator exports', () => {
     expect(modelSettings).toContain('value="打印板 1"')
   })
 })
+
+function readBlobText(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(blob)
+  })
+}
+
+function getTestLoopBounds(loop: VectorLoop) {
+  const xs = loop.points.map((point) => point.x)
+  const ys = loop.points.map((point) => point.y)
+  return {
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+  }
+}
+
+function getTestLoopArea(loop: VectorLoop) {
+  let area = 0
+  for (let index = 0; index < loop.points.length; index += 1) {
+    const current = loop.points[index]
+    const next = loop.points[(index + 1) % loop.points.length]
+    area += current.x * next.y - next.x * current.y
+  }
+  return Math.abs(area * 0.5)
+}

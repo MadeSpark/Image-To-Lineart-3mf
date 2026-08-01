@@ -12,11 +12,13 @@ import { UploadPanel } from '@/components/UploadPanel'
 import { WorkbenchHeader } from '@/components/WorkbenchHeader'
 import { useArtworkProcessor } from '@/hooks/useArtworkProcessor'
 import { useGeneratorStore } from '@/stores/generatorStore'
-import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork } from '@/types/generator'
+import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, VectorLoop, VectorPoint } from '@/types/generator'
 import {
+  applyLineartStrokeEdit,
   build3mfPackage,
   buildCombined3mfPackage,
   buildLineartSvgDocument,
+  rebuildArtworkWithLineLoops,
   buildLoopDxf,
   decodeGifFrames,
   fileToImportedLineart,
@@ -78,6 +80,7 @@ export default function Home() {
   const [welcomeDialogOpen, setWelcomeDialogOpen] = useState(true)
   const [thanksDialogOpen, setThanksDialogOpen] = useState(false)
   const [qaqModeEnabled, setQaqModeEnabled] = useState(false)
+  const [lineartOverrides, setLineartOverrides] = useState<Record<string, VectorLoop[]>>({})
 
   const activeEntry = useMemo(
     () => entries.find((entry) => entry.id === activeEntryId) ?? null,
@@ -145,6 +148,24 @@ export default function Home() {
     baseplateSettings,
     extrudeSettings,
   )
+  const activeLineartOverride = activeEntryId ? lineartOverrides[activeEntryId] : undefined
+  const effectiveArtwork = useMemo(
+    () => (artwork && activeLineartOverride
+      ? rebuildArtworkWithLineLoops(artwork, activeLineartOverride, baseplateSettings)
+      : artwork),
+    [activeLineartOverride, artwork, baseplateSettings],
+  )
+
+  useEffect(() => {
+    setLineartOverrides((current) => {
+      const activeIds = new Set(entries.map((entry) => entry.id))
+      const nextEntries = Object.entries(current).filter(([entryId]) => activeIds.has(entryId))
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+      return Object.fromEntries(nextEntries)
+    })
+  }, [entries])
 
   useEffect(() => {
     let cancelled = false
@@ -158,8 +179,8 @@ export default function Home() {
       }
     }
 
-    if (entries.length === 1 && activeEntry && artwork) {
-      setPlacementPreviewItems([{ entry: activeEntry, artwork }])
+    if (entries.length === 1 && activeEntry && effectiveArtwork) {
+      setPlacementPreviewItems([{ entry: activeEntry, artwork: effectiveArtwork }])
       setPlacementPreviewProcessing(false)
       setPlacementPreviewError(null)
       return () => {
@@ -189,7 +210,7 @@ export default function Home() {
     return () => {
       cancelled = true
     }
-  }, [activeEntry, artwork, baseplateSettings, entries, extrudeSettings, lineartSettings])
+  }, [activeEntry, artwork, baseplateSettings, effectiveArtwork, entries, extrudeSettings, lineartOverrides, lineartSettings])
 
   useEffect(() => {
     if (!qaqModeEnabled) return
@@ -243,9 +264,9 @@ export default function Home() {
   }, [qaqModeEnabled])
 
   const currentPreviewUrl = useMemo(() => {
-    if (!artwork || !activeEntry) return null
-    return getPreviewUrlForMode(previewMode, artwork, activeEntry)
-  }, [activeEntry, artwork, previewMode])
+    if (!effectiveArtwork || !activeEntry) return null
+    return getPreviewUrlForMode(previewMode, effectiveArtwork, activeEntry)
+  }, [activeEntry, effectiveArtwork, previewMode])
 
   const workflowItems = [
     '批量导入图片、GIF 帧或 DXF 线稿',
@@ -255,8 +276,9 @@ export default function Home() {
   ]
 
   const exportBaseName = getExportBaseName(activeEntry?.label, 'lineart-baseplate')
-  const canExport = Boolean(artwork && activeEntry)
+  const canExport = Boolean(effectiveArtwork && activeEntry)
   const activeGifImport = gifQueue[0] ?? null
+  const despeckleLocked = Boolean(activeEntryId && activeLineartOverride)
 
   const addEntries = (newEntries: BatchSourceItem[]) => {
     if (!newEntries.length) return
@@ -304,6 +326,12 @@ export default function Home() {
 
   const handleRemoveEntry = (entryId: string) => {
     setEntries((current) => current.filter((entry) => entry.id !== entryId))
+    setLineartOverrides((current) => {
+      if (!(entryId in current)) return current
+      const next = { ...current }
+      delete next[entryId]
+      return next
+    })
     if (activeEntryId === entryId) {
       const currentIndex = entries.findIndex((entry) => entry.id === entryId)
       const nextEntry = entries[currentIndex + 1] ?? entries[currentIndex - 1] ?? null
@@ -325,9 +353,12 @@ export default function Home() {
           extrudeSettings,
         })
 
+      const lineartOverride = lineartOverrides[entry.id]
       results.push({
         entry,
-        artwork: processedArtwork,
+        artwork: lineartOverride
+          ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings)
+          : processedArtwork,
       })
     }
 
@@ -385,9 +416,9 @@ export default function Home() {
     setExporting(true)
 
     try {
-      if (entries.length === 1 && activeEntry && artwork) {
+      if (entries.length === 1 && activeEntry && effectiveArtwork) {
         const singleBaseName = getExportBaseName(activeEntry.label, 'lineart-baseplate')
-        await exportSingleFile(format, singleBaseName, activeEntry, artwork)
+        await exportSingleFile(format, singleBaseName, activeEntry, effectiveArtwork)
         return
       }
 
@@ -409,8 +440,8 @@ export default function Home() {
           continue
         }
 
-        const previewUrl = getPreviewUrlForMode(previewMode, item.artwork, item.entry)
-        archiveEntries[`${baseName}-${getPreviewSuffix(previewMode)}.png`] = await dataUrlToU8(previewUrl)
+        const previewAsset = getPreviewAssetForMode(previewMode, item.artwork, item.entry)
+        archiveEntries[`${baseName}-${getPreviewSuffix(previewMode)}.${previewAsset.extension}`] = await dataUrlToU8(previewAsset.url)
       }
 
       triggerBlobDownload(
@@ -425,7 +456,7 @@ export default function Home() {
   }
 
   const handleExport3mf = async () => {
-    if (!activeEntry || !artwork) return
+    if (!activeEntry || !effectiveArtwork) return
     if (entries.length > 1) {
       setBatch3mfDialogOpen(true)
       return
@@ -436,7 +467,7 @@ export default function Home() {
       triggerBlobDownload(
         `${exportBaseName}.3mf`,
         new Blob([build3mfPackage(
-          artwork,
+          effectiveArtwork,
           baseplateSettings,
           extrudeSettings,
           printBedSettings,
@@ -467,9 +498,41 @@ export default function Home() {
   }
 
   const handleResetSettings = () => {
+    setLineartOverrides({})
     resetAllSettings({
       widthMm: defaultThreeMfProfile.printBedWidthMm,
       depthMm: defaultThreeMfProfile.printBedDepthMm,
+    })
+  }
+
+  const handleApplyLineartStroke = (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => {
+    if (!activeEntry || !effectiveArtwork || previewMode !== '线稿' || !points.length) {
+      return
+    }
+
+    const editedArtwork = applyLineartStrokeEdit(
+      effectiveArtwork,
+      baseplateSettings,
+      points,
+      radiusMm,
+      mode,
+    )
+    setLineartOverrides((current) => ({
+      ...current,
+      [activeEntry.id]: editedArtwork.lineLoops,
+    }))
+    if (lineartSettings.despeckle !== 0) {
+      updateLineartSettings({ despeckle: 0 })
+    }
+  }
+
+  const handleResetLineartEdits = () => {
+    if (!activeEntry) return
+    setLineartOverrides((current) => {
+      if (!(activeEntry.id in current)) return current
+      const next = { ...current }
+      delete next[activeEntry.id]
+      return next
     })
   }
 
@@ -518,8 +581,9 @@ export default function Home() {
               activeEntryId={activeEntryId}
               sourceImage={sourceImage}
               importedLineart={importedLineart}
-              sourceKind={activeEntry?.sourceKind ?? artwork?.sourceKind ?? null}
+              sourceKind={activeEntry?.sourceKind ?? effectiveArtwork?.sourceKind ?? artwork?.sourceKind ?? null}
               settings={lineartSettings}
+              despeckleLocked={despeckleLocked}
               processing={processing || exporting}
               onUpdateSettings={updateLineartSettings}
               onUploadImages={(files) => void handleUploadImages(files)}
@@ -550,13 +614,17 @@ export default function Home() {
           <div className="xl:sticky xl:top-6">
             <PreviewCanvas
               sourceImage={sourceImage}
-              artwork={artwork}
+              artwork={effectiveArtwork}
               previewMode={previewMode}
               processing={processing || exporting}
               error={error}
               targetColor={lineartSettings.targetColor}
               baseplateSettings={baseplateSettings}
               extrudeSettings={extrudeSettings}
+              hasLineartEdits={despeckleLocked}
+              viewResetKey={activeEntry?.id ?? 'empty'}
+              onApplyLineartStroke={handleApplyLineartStroke}
+              onResetLineartEdits={handleResetLineartEdits}
               onPickTargetColor={(color) => updateLineartSettings({ targetColor: color })}
             />
           </div>
@@ -591,7 +659,7 @@ export default function Home() {
               onImport3mfProfile={(file) => void handleImport3mfProfile(file)}
             />
             <ExportPanel
-              stats={artwork?.stats ?? null}
+              stats={effectiveArtwork?.stats ?? null}
               batchCount={entries.length}
               canExport={canExport && !exporting}
               onExportJson={() => void exportBatchFiles('json')}
@@ -755,10 +823,10 @@ async function exportSingleFile(
     return
   }
 
-  const previewUrl = getPreviewUrlForMode(useGeneratorStore.getState().previewMode, artwork, entry)
+  const previewAsset = getPreviewAssetForMode(useGeneratorStore.getState().previewMode, artwork, entry)
   triggerBlobDownload(
-    `${baseName}-${getPreviewSuffix(useGeneratorStore.getState().previewMode)}.png`,
-    new Blob([await dataUrlToU8(previewUrl)], { type: 'image/png' }),
+    `${baseName}-${getPreviewSuffix(useGeneratorStore.getState().previewMode)}.${previewAsset.extension}`,
+    new Blob([await dataUrlToU8(previewAsset.url)], { type: previewAsset.mimeType }),
   )
 }
 
@@ -783,18 +851,50 @@ function buildProjectPayload(entry: BatchSourceItem, artwork: ProcessedArtwork) 
 }
 
 function getPreviewUrlForMode(previewMode: PreviewMode, artwork: ProcessedArtwork, entry: BatchSourceItem) {
+  return getPreviewAssetForMode(previewMode, artwork, entry).url
+}
+
+function getPreviewAssetForMode(previewMode: PreviewMode, artwork: ProcessedArtwork, entry: BatchSourceItem) {
   if (previewMode === '原图') {
-    return entry.sourceImage?.dataUrl ?? artwork.previews.lineartDataUrl
+    return {
+      url: entry.sourceImage?.dataUrl ?? artwork.previews.lineartDataUrl,
+      extension: 'png',
+      mimeType: 'image/png',
+    }
   }
-  if (previewMode === '线稿') return artwork.previews.lineartDataUrl
-  if (previewMode === '底板预览') return artwork.previews.baseplateDataUrl
-  return artwork.previews.compositeDataUrl
+  if (previewMode === '线稿') {
+    return {
+      url: artwork.previews.lineartDataUrl,
+      extension: 'svg',
+      mimeType: 'image/svg+xml;charset=utf-8',
+    }
+  }
+  if (previewMode === '底板预览') {
+    return {
+      url: artwork.previews.baseplateDataUrl,
+      extension: 'svg',
+      mimeType: 'image/svg+xml;charset=utf-8',
+    }
+  }
+  if (previewMode === '3D预览') {
+    return {
+      url: artwork.previews.compositeDataUrl,
+      extension: 'svg',
+      mimeType: 'image/svg+xml;charset=utf-8',
+    }
+  }
+  return {
+    url: artwork.previews.compositeDataUrl,
+    extension: 'svg',
+    mimeType: 'image/svg+xml;charset=utf-8',
+  }
 }
 
 function getPreviewSuffix(previewMode: PreviewMode) {
   if (previewMode === '原图') return 'source'
   if (previewMode === '线稿') return 'lineart'
   if (previewMode === '底板预览') return 'baseplate'
+  if (previewMode === '3D预览') return '3d-preview'
   return 'composite'
 }
 

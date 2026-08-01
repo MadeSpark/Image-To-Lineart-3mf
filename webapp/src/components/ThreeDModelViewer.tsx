@@ -1,0 +1,203 @@
+import { Box, LoaderCircle } from 'lucide-react'
+import type { CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { BaseplateSettings, ExtrudeSettings, ProcessedArtwork } from '@/types/generator'
+
+let modelViewerImportPromise: Promise<unknown> | null = null
+const previewModelCache = new WeakMap<ProcessedArtwork, Map<string, string>>()
+
+function ensureModelViewerDefined() {
+  if (typeof window === 'undefined') {
+    return Promise.resolve()
+  }
+
+  if (window.customElements.get('model-viewer')) {
+    return Promise.resolve()
+  }
+
+  modelViewerImportPromise ??= import('@google/model-viewer')
+  return modelViewerImportPromise
+}
+
+function getPreviewCacheKey(
+  baseplateSettings: BaseplateSettings,
+  extrudeSettings: ExtrudeSettings,
+) {
+  return [
+    baseplateSettings.baseColor,
+    baseplateSettings.lineColor,
+    extrudeSettings.baseThicknessMm,
+    extrudeSettings.lineHeightMm,
+    extrudeSettings.lineThicknessMm,
+  ].join('|')
+}
+
+function getCachedPreviewModelUrl(
+  artwork: ProcessedArtwork,
+  cacheKey: string,
+) {
+  return previewModelCache.get(artwork)?.get(cacheKey) ?? null
+}
+
+function setCachedPreviewModelUrl(
+  artwork: ProcessedArtwork,
+  cacheKey: string,
+  url: string,
+) {
+  const existing = previewModelCache.get(artwork)
+  if (existing) {
+    existing.set(cacheKey, url)
+    return
+  }
+
+  previewModelCache.set(artwork, new Map([[cacheKey, url]]))
+}
+
+interface ThreeDModelViewerProps {
+  artwork: ProcessedArtwork
+  baseplateSettings: BaseplateSettings
+  extrudeSettings: ExtrudeSettings
+}
+
+export function ThreeDModelViewer({
+  artwork,
+  baseplateSettings,
+  extrudeSettings,
+}: ThreeDModelViewerProps) {
+  const [modelUrl, setModelUrl] = useState<string | null>(null)
+  const [isBuilding, setIsBuilding] = useState(false)
+  const [buildError, setBuildError] = useState<string | null>(null)
+  const modelHeight = extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm
+  const cameraTarget = `0m ${Math.max(modelHeight * 0.5, 0.25)}m 0m`
+
+  useEffect(() => {
+    const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings)
+    const cachedUrl = getCachedPreviewModelUrl(artwork, cacheKey)
+    if (cachedUrl) {
+      void ensureModelViewerDefined()
+      setModelUrl(cachedUrl)
+      setBuildError(null)
+      setIsBuilding(false)
+      return
+    }
+
+    let cancelled = false
+    const worker = new Worker(new URL('../workers/threeDPreview.worker.ts', import.meta.url), { type: 'module' })
+    const requestId = Date.now()
+
+    const assignModel = async () => {
+      setModelUrl(null)
+      setIsBuilding(true)
+      setBuildError(null)
+      await ensureModelViewerDefined()
+      if (cancelled) return
+
+      worker.onmessage = (event: MessageEvent<{ requestId: number; buffer: ArrayBuffer; error?: string }>) => {
+        if (cancelled || event.data.requestId !== requestId) {
+          return
+        }
+
+        if (event.data.error) {
+          setBuildError(event.data.error)
+          setIsBuilding(false)
+          return
+        }
+
+        const nextUrl = URL.createObjectURL(new Blob([event.data.buffer], { type: 'model/gltf+json' }))
+        setCachedPreviewModelUrl(artwork, cacheKey, nextUrl)
+        setModelUrl(nextUrl)
+        setBuildError(null)
+        setIsBuilding(false)
+      }
+      worker.onerror = () => {
+        if (cancelled) {
+          return
+        }
+        setBuildError('3D 预览构建失败，请稍后重试')
+        setIsBuilding(false)
+      }
+
+      worker.postMessage({
+        requestId,
+        artwork: {
+          baseLoops: artwork.baseLoops,
+          lineLoops: artwork.lineLoops,
+          boardWidthMm: artwork.boardWidthMm,
+          boardHeightMm: artwork.boardHeightMm,
+          pixelsPerMm: artwork.pixelsPerMm,
+        },
+        baseplateSettings,
+        extrudeSettings,
+      })
+    }
+
+    void assignModel()
+
+    return () => {
+      cancelled = true
+      setIsBuilding(false)
+      worker.terminate()
+    }
+  }, [artwork, baseplateSettings, extrudeSettings])
+
+  return (
+    <div className="relative h-full w-full">
+      {modelUrl ? (
+        <model-viewer
+          src={modelUrl}
+          alt="线稿底板 3D 预览"
+          camera-controls
+          camera-orbit="38deg 68deg 65%"
+          camera-target={cameraTarget}
+          disable-pan
+          exposure="1.06"
+          field-of-view="18deg"
+          interaction-prompt="none"
+          min-camera-orbit="auto auto 35%"
+          max-camera-orbit="auto auto 300%"
+          shadow-intensity="0.9"
+          touch-action="pan-y"
+          className="block h-full w-full"
+          style={{
+            '--progress-bar-color': '#0088ff',
+            backgroundColor: 'transparent',
+            minHeight: '100%',
+            width: '100%',
+            height: '100%',
+          } as CSSProperties}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center">
+          {!isBuilding && (
+            <div className="inline-flex items-center gap-3 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_48px_rgba(15,23,42,0.22)]">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              正在构建 3D 模型
+            </div>
+          )}
+        </div>
+      )}
+
+      {isBuilding && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
+          <div className="inline-flex items-center gap-3 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_48px_rgba(15,23,42,0.22)]">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+            正在渲染 3D 预览
+          </div>
+        </div>
+      )}
+
+      {buildError && !isBuilding && (
+        <div className="absolute left-5 top-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600 shadow-sm">
+          {buildError}
+        </div>
+      )}
+
+      <div className="pointer-events-none absolute bottom-5 right-5 rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
+        <span className="inline-flex items-center gap-2">
+          <Box className="h-3.5 w-3.5" />
+          拖动旋转，滚轮缩放
+        </span>
+      </div>
+    </div>
+  )
+}
