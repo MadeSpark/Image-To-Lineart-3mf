@@ -8,7 +8,7 @@
     "predev": "npm run sync-version",
     "dev": "node ./node_modules/vite/bin/vite.js",
     "prebuild": "npm run sync-version",
-    "build": "node ./node_modules/typescript/lib/tsc.js -b && node ./node_modules/vite/bin/vite.js build && node ./scripts/inline-dist.mjs",
+    "build": "node ./node_modules/typescript/lib/tsc.js -b && node ./scripts/build-vite.mjs && node ./scripts/inline-dist.mjs",
     "prelint": "npm run sync-version",
     "lint": "eslint .",
     "prepreview": "npm run sync-version",
