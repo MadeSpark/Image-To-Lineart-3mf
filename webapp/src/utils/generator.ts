@@ -521,6 +521,7 @@ export function build3mfPackage(
   ], [{
     plateIndex: 0,
     objectIds: [4],
+    identifyIds: [1],
   }])
   const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
