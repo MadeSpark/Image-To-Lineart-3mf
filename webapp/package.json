@@ -4,11 +4,18 @@
   "version": "1.0.2",
   "type": "module",
   "scripts": {
+    "sync-version": "node ./scripts/sync-version.mjs",
+    "predev": "npm run sync-version",
     "dev": "vite",
+    "prebuild": "npm run sync-version",
     "build": "tsc -b && vite build && node ./scripts/inline-dist.mjs",
+    "prelint": "npm run sync-version",
     "lint": "eslint .",
+    "prepreview": "npm run sync-version",
     "preview": "vite preview",
+    "precheck": "npm run sync-version",
     "check": "tsc -b --noEmit",
+    "pretest": "npm run sync-version",
     "test": "vitest run"
   },
   "dependencies": {
