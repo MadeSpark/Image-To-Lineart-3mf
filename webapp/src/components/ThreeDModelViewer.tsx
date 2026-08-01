@@ -74,6 +74,9 @@ export function ThreeDModelViewer({
     const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings)
     const cachedUrl = getCachedPreviewModelUrl(artwork, cacheKey)
     if (cachedUrl) {
+      // #region debug-point A:viewer-cache-hit
+      typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'pre-fix', hypothesisId: 'A', location: 'ThreeDModelViewer.tsx:cacheHit', msg: '[DEBUG] viewer reused cached preview model', data: { cacheKey, boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm }, ts: Date.now() }) }).catch(() => {})
+      // #endregion
       void ensureModelViewerDefined()
       setModelUrl(cachedUrl)
       setBuildError(null)
@@ -86,6 +89,9 @@ export function ThreeDModelViewer({
     const requestId = Date.now()
 
     const assignModel = async () => {
+      // #region debug-point A:viewer-build-start
+      typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'pre-fix', hypothesisId: 'A', location: 'ThreeDModelViewer.tsx:assignModel', msg: '[DEBUG] viewer started preview model build', data: { requestId, cacheKey, boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm, pixelsPerMm: artwork.pixelsPerMm }, ts: Date.now() }) }).catch(() => {})
+      // #endregion
       setModelUrl(null)
       setIsBuilding(true)
       setBuildError(null)
@@ -98,12 +104,18 @@ export function ThreeDModelViewer({
         }
 
         if (event.data.error) {
+          // #region debug-point A:viewer-worker-error
+          typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'pre-fix', hypothesisId: 'A', location: 'ThreeDModelViewer.tsx:onmessage:error', msg: '[DEBUG] viewer received worker error', data: { requestId, error: event.data.error }, ts: Date.now() }) }).catch(() => {})
+          // #endregion
           setBuildError(event.data.error)
           setIsBuilding(false)
           return
         }
 
         const nextUrl = URL.createObjectURL(new Blob([event.data.buffer], { type: 'model/gltf+json' }))
+        // #region debug-point A:viewer-worker-success
+        typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'pre-fix', hypothesisId: 'A', location: 'ThreeDModelViewer.tsx:onmessage:success', msg: '[DEBUG] viewer received worker success', data: { requestId, bufferBytes: event.data.buffer.byteLength }, ts: Date.now() }) }).catch(() => {})
+        // #endregion
         setCachedPreviewModelUrl(artwork, cacheKey, nextUrl)
         setModelUrl(nextUrl)
         setBuildError(null)
@@ -113,6 +125,9 @@ export function ThreeDModelViewer({
         if (cancelled) {
           return
         }
+        // #region debug-point A:viewer-worker-onerror
+        typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'pre-fix', hypothesisId: 'A', location: 'ThreeDModelViewer.tsx:worker.onerror', msg: '[DEBUG] viewer worker onerror fired', data: { requestId }, ts: Date.now() }) }).catch(() => {})
+        // #endregion
         setBuildError('3D 预览构建失败，请稍后重试')
         setIsBuilding(false)
       }

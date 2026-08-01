@@ -655,6 +655,60 @@ describe('generator exports', () => {
     expect(modelSettings).toContain('<plate>')
     expect(modelSettings).toContain('value="打印板 1"')
   })
+
+  it('keeps model instance identifiers unique across combined 3mf plates', () => {
+    const largeArtwork = {
+      sourceKind: 'image' as const,
+      sourceWidth: 90,
+      sourceHeight: 90,
+      lineLoops: sourceLoops,
+      baseLoops: sourceLoops,
+      boardWidthMm: 90,
+      boardHeightMm: 90,
+      pixelsPerMm: 10,
+      previews: {
+        lineartDataUrl: '',
+        baseplateDataUrl: '',
+        compositeDataUrl: '',
+      },
+      stats: {
+        sourceKind: 'image' as const,
+        sourceWidth: 90,
+        sourceHeight: 90,
+        lineLoopCount: 1,
+        baseLoopCount: 1,
+        lineSegments: 4,
+        baseSegments: 4,
+        boardWidthMm: 90,
+        boardHeightMm: 90,
+      },
+    }
+
+    const packageBytes = buildCombined3mfPackage(
+      [
+        { id: '1-a', name: '1-a', artwork: largeArtwork },
+        { id: '2-b', name: '2-b', artwork: largeArtwork },
+      ],
+      rectangleSettings,
+      {
+        baseThicknessMm: 0.2,
+        lineThicknessMm: 0.2,
+        lineHeightMm: 0.2,
+      },
+      {
+        widthMm: 120,
+        depthMm: 120,
+        spacingMm: 8,
+      },
+    )
+
+    const files = unzipSync(packageBytes)
+    const modelSettings = strFromU8(files['Metadata/model_settings.config'])
+
+    expect((modelSettings.match(/<plate>/g) ?? []).length).toBe(2)
+    expect(modelSettings).toContain('<metadata key="identify_id" value="1"/>')
+    expect(modelSettings).toContain('<metadata key="identify_id" value="2"/>')
+  })
 })
 
 function readBlobText(blob: Blob) {

@@ -57,16 +57,26 @@ interface BambuModelSettingsObject {
   id: number
   name: string
   extruder?: number
+  faceCount?: number
   parts?: Array<{
     id: number
     name: string
     extruder: number
+    matrix?: string
+    sourceFile?: string
+    sourceObjectId?: number
+    sourceVolumeId?: number
+    sourceOffsetX?: number
+    sourceOffsetY?: number
+    sourceOffsetZ?: number
+    faceCount?: number
   }>
 }
 
 interface BambuPlateAssignment {
   plateIndex: number
   objectIds: number[]
+  identifyIds: number[]
 }
 
 export async function fileToSourceImage(file: File): Promise<SourceImage> {
@@ -445,6 +455,9 @@ export function build3mfPackage(
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
 ) {
+  // #region debug-point B:build-3mf-package
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'B', location: 'generator.ts:build3mfPackage:start', msg: '[DEBUG] start build3mfPackage', data: { boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm, pixelsPerMm: artwork.pixelsPerMm, baseLoopCount: artwork.baseLoops.length, lineLoopCount: artwork.lineLoops.length }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
   const lineMeshPixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
@@ -480,6 +493,9 @@ export function build3mfPackage(
   )
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
   const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
+  // #region debug-point B:build-3mf-model-xml
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'B', location: 'generator.ts:build3mfPackage:modelXml', msg: '[DEBUG] built single 3mf model xml', data: { modelXmlLength: modelXml.length, baseVertices: baseMesh.vertices.length, baseTriangles: baseMesh.triangles.length, lineVertices: lineMesh.vertices.length, lineTriangles: lineMesh.triangles.length }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -527,6 +543,9 @@ export function buildPreviewModelGltfBlob(
   extrudeSettings: ExtrudeSettings,
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
+  // #region debug-point A:build-preview-model
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'A', location: 'generator.ts:buildPreviewModelGltfBlob:start', msg: '[DEBUG] start buildPreviewModelGltfBlob', data: { boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm, sourcePixelsPerMm: artwork.pixelsPerMm, previewPixelsPerMm: lineMeshPixelsPerMm, baseLoopCount: artwork.baseLoops.length, lineLoopCount: artwork.lineLoops.length }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const baseMesh = extrudeLoopsToMesh(
     keepOuterLoops(artwork.baseLoops),
     0,
@@ -564,6 +583,22 @@ function choosePreviewModelPixelsPerMm(artwork: PreviewModelArtworkInput) {
   return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 2.5, 8)
 }
 
+function chooseCombinedExportPixelsPerMm(
+  artwork: ProcessedArtwork,
+  itemCount: number,
+  totalAreaMm: number,
+) {
+  const sourcePixelsPerMm = clamp(Math.max(artwork.pixelsPerMm, 10), 8, 20)
+  const longestSideMm = Math.max(artwork.boardWidthMm, artwork.boardHeightMm, 1)
+  const safeTotalAreaMm = Math.max(totalAreaMm, artwork.boardWidthMm * artwork.boardHeightMm, 1)
+  const maxCombinedDimensionPx = itemCount >= 16 ? 520 : itemCount >= 8 ? 720 : 960
+  const maxCombinedAreaPx = itemCount >= 16 ? 1_250_000 : itemCount >= 8 ? 1_900_000 : 2_800_000
+  const byDimension = maxCombinedDimensionPx / longestSideMm
+  const byArea = Math.sqrt(maxCombinedAreaPx / safeTotalAreaMm)
+
+  return clamp(Math.min(sourcePixelsPerMm, byDimension, byArea), 2.5, 12)
+}
+
 export function buildCombined3mfPackage(
   items: Array<{
     id: string
@@ -575,6 +610,10 @@ export function buildCombined3mfPackage(
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
 ) {
+  // #region debug-point D:build-combined-3mf-package
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:start', msg: '[DEBUG] start buildCombined3mfPackage', data: { itemCount: items.length, printBedWidthMm: printBedSettings.widthMm, printBedDepthMm: printBedSettings.depthMm }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
+  const totalAreaMm = items.reduce((sum, item) => sum + (item.artwork.boardWidthMm * item.artwork.boardHeightMm), 0)
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -588,8 +627,7 @@ export function buildCombined3mfPackage(
     '  <Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>',
     '</Relationships>',
   ].join('\n')
-  const baseColor = `${baseplateSettings.baseColor.toUpperCase()}FF`
-  const lineColor = `${baseplateSettings.lineColor.toUpperCase()}FF`
+  const modelRels = build3mfModelRelationships(items.length)
   const printBedLayout = planPrintBedLayout(
     items.map((item) => ({
       id: item.id,
@@ -603,86 +641,134 @@ export function buildCombined3mfPackage(
   if (printBedLayout.overflowCount > 0) {
     throw new Error('存在单个素材尺寸超过打印盘可用范围，请增大打印盘尺寸或缩小底板。')
   }
-  const resourceLines: string[] = [
-    '    <basematerials id="1">',
-    `      <base name="底板" displaycolor="${baseColor}"/>`,
-    `      <base name="线稿" displaycolor="${lineColor}"/>`,
-    '    </basematerials>',
-  ]
+  const resourceLines: string[] = []
   const buildLines: string[] = []
-  let nextObjectId = 2
+  let nextObjectId = 1
   const modelSettingsObjects: BambuModelSettingsObject[] = []
-  const plateAssignments = new Map<number, number[]>()
+  const plateAssignments = new Map<number, { objectIds: number[]; identifyIds: number[] }>()
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
+  let nextIdentifyId = 1
+  const packageEntries: Record<string, Uint8Array> = {}
+  const sourceFileName = 'lineart-baseplate-batch.3mf'
 
-  items.forEach((item) => {
+  items.forEach((item, itemIndex) => {
     const placement = printBedLayout.placements.find((entry) => entry.id === item.id)
     if (!placement) {
       throw new Error(`缺少素材 ${item.name} 的摆盘位置`)
     }
     const flippedBaseLoops = flipLoopsForModelExport(item.artwork.baseLoops, item.artwork.boardHeightMm)
     const flippedLineLoops = flipLoopsForModelExport(item.artwork.lineLoops, item.artwork.boardHeightMm)
-    const lineMeshPixelsPerMm = clamp(Math.max(item.artwork.pixelsPerMm, 10), 8, 20)
-    const placedBaseMesh = translateMesh(
-      extrudeLoopsToMesh(keepOuterLoops(flippedBaseLoops), 0, extrudeSettings.baseThicknessMm),
-      placement.xMm,
-      placement.yMm,
+    const lineMeshPixelsPerMm = chooseCombinedExportPixelsPerMm(item.artwork, items.length, totalAreaMm)
+    const baseMesh = extrudeLoopsToMesh(keepOuterLoops(flippedBaseLoops), 0, extrudeSettings.baseThicknessMm)
+    const lineMesh = extrudeMaskToMesh(
+      flippedLineLoops,
+      item.artwork.boardWidthMm,
+      item.artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      extrudeSettings.lineHeightMm,
+      extrudeSettings.lineThicknessMm,
+      MIN_EXPORTABLE_LINE_WIDTH_MM,
     )
-    const placedLineMesh = translateMesh(
-      extrudeMaskToMesh(
-        flippedLineLoops,
-        item.artwork.boardWidthMm,
-        item.artwork.boardHeightMm,
-        lineMeshPixelsPerMm,
-        extrudeSettings.lineHeightMm,
-        extrudeSettings.lineThicknessMm,
-        MIN_EXPORTABLE_LINE_WIDTH_MM,
-      ),
-      placement.xMm,
-      placement.yMm,
+    const localBaseMesh = translateMesh(
+      baseMesh,
+      -(item.artwork.boardWidthMm * 0.5),
+      -(item.artwork.boardHeightMm * 0.5),
+      -(extrudeSettings.baseThicknessMm * 0.5),
+    )
+    const localLineMesh = translateMesh(
+      lineMesh,
+      -(item.artwork.boardWidthMm * 0.5),
+      -(item.artwork.boardHeightMm * 0.5),
+      -(extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm * 0.5),
     )
     const baseObjectId = nextObjectId
     const lineObjectId = nextObjectId + 1
     const compositeObjectId = nextObjectId + 2
     nextObjectId += 3
+    const objectFilePath = `/3D/Objects/object_${itemIndex + 1}.model`
+    const centerX = placement.xMm + item.artwork.boardWidthMm * 0.5
+    const centerY = placement.yMm + item.artwork.boardHeightMm * 0.5
+    const baseCenterZ = extrudeSettings.baseThicknessMm * 0.5
+    const lineCenterZ = extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm * 0.5
+    const buildOffset = getCombinedPlateBuildOffset(placement.plateIndex, printBedSettings)
+    const baseTransform = format3mfTransform(centerX, centerY, baseCenterZ)
+    const lineTransform = format3mfTransform(centerX, centerY, lineCenterZ)
+    const baseMatrix = format4x4Matrix(centerX, centerY, baseCenterZ)
+    const lineMatrix = format4x4Matrix(centerX, centerY, lineCenterZ)
+    // #region debug-point D:combined-item-mesh
+    typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:item', msg: '[DEBUG] prepared combined 3mf item meshes', data: { itemId: item.id, itemName: item.name, plateIndex: placement.plateIndex, buildOffsetX: buildOffset.xMm, buildOffsetY: buildOffset.yMm, boardWidthMm: item.artwork.boardWidthMm, boardHeightMm: item.artwork.boardHeightMm, lineMeshPixelsPerMm, baseVertices: localBaseMesh.vertices.length, baseTriangles: localBaseMesh.triangles.length, lineVertices: localLineMesh.vertices.length, lineTriangles: localLineMesh.triangles.length }, ts: Date.now() }) }).catch(() => {})
+    // #endregion
 
-    resourceLines.push(meshTo3mfObject(placedBaseMesh, baseObjectId, `${item.name}-底板`, 0))
-    resourceLines.push(meshTo3mfObject(placedLineMesh, lineObjectId, `${item.name}-线稿`, 1))
-    resourceLines.push(build3mfCompositeObject(compositeObjectId, item.name, [baseObjectId, lineObjectId]))
-    buildLines.push(`    <item objectid="${compositeObjectId}"/>`)
+    packageEntries[`3D/Objects/object_${itemIndex + 1}.model`] = strToU8(
+      buildStandalone3mfObjectModel(localBaseMesh, localLineMesh, baseObjectId, lineObjectId),
+    )
+    resourceLines.push(
+      build3mfExternalCompositeObject(
+        compositeObjectId,
+        item.name,
+        objectFilePath,
+        baseObjectId,
+        lineObjectId,
+        baseTransform,
+        lineTransform,
+        itemIndex,
+      ),
+    )
+    buildLines.push(`  <item objectid="${compositeObjectId}" p:UUID="${buildPseudoUuid(compositeObjectId, itemIndex + 1, 0, 0, 0xb1ec4553aec9)}" transform="${format3mfTransform(buildOffset.xMm, buildOffset.yMm, 0)}" printable="1"/>`)
     modelSettingsObjects.push({
       id: compositeObjectId,
       name: item.name,
+      extruder: 1,
+      faceCount: baseMesh.triangles.length + lineMesh.triangles.length,
       parts: [
-        { id: baseObjectId, name: `${item.name}-底板`, extruder: 1 },
-        { id: lineObjectId, name: `${item.name}-线稿`, extruder: 2 },
+        {
+          id: baseObjectId,
+          name: `${item.name}-底板`,
+          extruder: 1,
+          matrix: baseMatrix,
+          sourceFile: sourceFileName,
+          sourceObjectId: itemIndex,
+          sourceVolumeId: 0,
+          sourceOffsetX: centerX,
+          sourceOffsetY: centerY,
+          sourceOffsetZ: baseCenterZ,
+          faceCount: baseMesh.triangles.length,
+        },
+        {
+          id: lineObjectId,
+          name: `${item.name}-线稿`,
+          extruder: 2,
+          matrix: lineMatrix,
+          sourceFile: sourceFileName,
+          sourceObjectId: itemIndex,
+          sourceVolumeId: 1,
+          sourceOffsetX: centerX,
+          sourceOffsetY: centerY,
+          sourceOffsetZ: lineCenterZ,
+          faceCount: lineMesh.triangles.length,
+        },
       ],
     })
-    const currentPlateObjectIds = plateAssignments.get(placement.plateIndex) ?? []
-    currentPlateObjectIds.push(compositeObjectId)
-    plateAssignments.set(placement.plateIndex, currentPlateObjectIds)
+    const currentPlateAssignment = plateAssignments.get(placement.plateIndex) ?? { objectIds: [], identifyIds: [] }
+    currentPlateAssignment.objectIds.push(compositeObjectId)
+    currentPlateAssignment.identifyIds.push(nextIdentifyId)
+    nextIdentifyId += 1
+    plateAssignments.set(placement.plateIndex, currentPlateAssignment)
   })
 
-  const modelXml = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
-    `  <metadata name="Application">${applicationName}</metadata>`,
-    '  <metadata name="Designer">线稿底板生成器</metadata>',
-    '  <metadata name="Title">线稿底板批量 3MF</metadata>',
-    '  <resources>',
-    ...resourceLines,
-    '  </resources>',
-    '  <build>',
-    ...buildLines,
-    '  </build>',
-    '</model>',
-  ].join('\n')
+  const modelXml = buildCombined3mfModelXml(applicationName, resourceLines, buildLines)
+  // #region debug-point D:combined-model-xml
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:modelXml', msg: '[DEBUG] built combined 3mf model xml', data: { modelXmlLength: modelXml.length, resourceCount: resourceLines.length, buildItemCount: buildLines.length, plateCount: printBedLayout.plates.length }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const modelSettings = buildBambuModelSettingsConfig(
     modelSettingsObjects,
     Array.from(plateAssignments.entries())
       .sort(([left], [right]) => left - right)
-      .map(([plateIndex, objectIds]) => ({ plateIndex, objectIds })),
+      .map(([plateIndex, assignment]) => ({ plateIndex, objectIds: assignment.objectIds, identifyIds: assignment.identifyIds })),
   )
+  // #region debug-point D:combined-model-settings
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:modelSettings', msg: '[DEBUG] built combined 3mf model settings', data: { modelSettingsLength: modelSettings.length, plateAssignments: Array.from(plateAssignments.entries()).sort(([left], [right]) => left - right).map(([plateIndex, assignment]) => ({ plateIndex, objectCount: assignment.objectIds.length, firstIdentifyId: assignment.identifyIds[0] ?? null, lastIdentifyId: assignment.identifyIds[assignment.identifyIds.length - 1] ?? null })) }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
   const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, printBedLayout.plates.length)
@@ -690,11 +776,13 @@ export function buildCombined3mfPackage(
   return zipSync({
     '[Content_Types].xml': strToU8(contentTypes),
     '_rels/.rels': strToU8(rootRels),
+    '3D/_rels/3dmodel.model.rels': strToU8(modelRels),
     '3D/3dmodel.model': strToU8(modelXml),
     'Metadata/model_settings.config': strToU8(modelSettings),
     'Metadata/project_settings.config': strToU8(projectSettings),
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
+    ...packageEntries,
   }, { level: 0 })
 }
 
@@ -818,6 +906,9 @@ function buildGltfPreviewBlob(
   })
 
   const combinedBuffer = concatUint8Arrays(chunks)
+  // #region debug-point A:gltf-buffer-ready
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'A', location: 'generator.ts:buildGltfPreviewBlob:bufferReady', msg: '[DEBUG] gltf buffer ready', data: { partCount: parts.length, combinedBufferBytes: combinedBuffer.byteLength, meshVertices: parts.map((part) => ({ name: part.name, vertices: part.mesh.vertices.length, triangles: part.mesh.triangles.length })) }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   const gltf = {
     asset: {
       version: '2.0',
@@ -1105,6 +1196,27 @@ export function planPrintBedLayout(
     currentPlate.placements.push(placement)
     currentPlate.rowMaxHeight = Math.max(currentPlate.rowMaxHeight, item.heightMm)
     currentPlate.cursorX += item.widthMm + spacingMm
+  })
+
+  plates.forEach((plate) => {
+    const fittedPlacements = plate.placements.filter((placement) => placement.fits)
+    if (!fittedPlacements.length) {
+      return
+    }
+
+    const minX = Math.min(...fittedPlacements.map((placement) => placement.xMm))
+    const minY = Math.min(...fittedPlacements.map((placement) => placement.yMm))
+    const maxX = Math.max(...fittedPlacements.map((placement) => placement.xMm + placement.widthMm))
+    const maxY = Math.max(...fittedPlacements.map((placement) => placement.yMm + placement.heightMm))
+    const targetMinX = Math.max(edgeMarginMm, (widthMm - (maxX - minX)) * 0.5)
+    const targetMinY = Math.max(edgeMarginMm, (depthMm - (maxY - minY)) * 0.5)
+    const deltaX = clamp(targetMinX - minX, edgeMarginMm - minX, widthMm - edgeMarginMm - maxX)
+    const deltaY = clamp(targetMinY - minY, edgeMarginMm - minY, depthMm - edgeMarginMm - maxY)
+
+    fittedPlacements.forEach((placement) => {
+      placement.xMm += deltaX
+      placement.yMm += deltaY
+    })
   })
 
   return {
@@ -2650,6 +2762,122 @@ function build3mfCompositeObject(objectId: number, name: string, componentIds: n
   ].join('\n')
 }
 
+function build3mfExternalCompositeObject(
+  objectId: number,
+  name: string,
+  objectFilePath: string,
+  baseObjectId: number,
+  lineObjectId: number,
+  baseTransform: string,
+  lineTransform: string,
+  itemIndex: number,
+) {
+  return [
+    `  <object id="${objectId}" p:UUID="${buildPseudoUuid(itemIndex + 1, 0, 0, 0, 0x61cb4c039d28)}" type="model">`,
+    '   <components>',
+    `    <component p:path="${objectFilePath}" objectid="${baseObjectId}" p:UUID="${buildPseudoUuid(itemIndex + 1, 1, 0, 0, 0xb20640ff9872)}" transform="${baseTransform}"/>`,
+    `    <component p:path="${objectFilePath}" objectid="${lineObjectId}" p:UUID="${buildPseudoUuid(itemIndex + 1, 1, 1, 0, 0xb20640ff9872)}" transform="${lineTransform}"/>`,
+    '   </components>',
+    '  </object>',
+  ].join('\n')
+}
+
+function buildStandalone3mfObjectModel(
+  baseMesh: MeshData,
+  lineMesh: MeshData,
+  baseObjectId: number,
+  lineObjectId: number,
+) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">',
+    ' <metadata name="BambuStudio:3mfVersion">1</metadata>',
+    ' <resources>',
+    `  ${meshToStandalone3mfObject(baseMesh, baseObjectId)}`,
+    `  ${meshToStandalone3mfObject(lineMesh, lineObjectId)}`,
+    ' </resources>',
+    ' <build/>',
+    '</model>',
+  ].join('\n')
+}
+
+function buildCombined3mfModelXml(
+  applicationName: string,
+  resourceObjects: string[],
+  buildLines: string[],
+) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">',
+    ` <metadata name="Application">${applicationName}</metadata>`,
+    ' <metadata name="BambuStudio:3mfVersion">1</metadata>',
+    ' <metadata name="Designer">线稿底板生成器</metadata>',
+    ' <metadata name="Title">线稿底板批量 3MF</metadata>',
+    ' <resources>',
+    ...resourceObjects,
+    ' </resources>',
+    ` <build p:UUID="${buildPseudoUuid(resourceObjects.length, buildLines.length, 0, 0, 0x22b54d848835)}">`,
+    ...buildLines,
+    ' </build>',
+    '</model>',
+  ].join('\n')
+}
+
+function getCombinedPlateBuildOffset(plateIndex: number, printBedSettings: PrintBedSettings) {
+  const spacing = Math.max(printBedSettings.spacingMm, 8)
+  const stepX = printBedSettings.widthMm + spacing * 6
+  const stepY = printBedSettings.depthMm + spacing * 6
+  const column = plateIndex % 2
+  const row = Math.floor(plateIndex / 2)
+
+  return {
+    xMm: column * stepX,
+    yMm: row * stepY,
+  }
+}
+
+function build3mfModelRelationships(objectFileCount: number) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ...Array.from({ length: objectFileCount }, (_, index) =>
+      ` <Relationship Target="/3D/Objects/object_${index + 1}.model" Id="rel-${index + 1}" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>`),
+    '</Relationships>',
+  ].join('\n')
+}
+
+function meshToStandalone3mfObject(mesh: MeshData, objectId: number) {
+  return [
+    `<object id="${objectId}" type="model">`,
+    '   <mesh>',
+    '    <vertices>',
+    ...mesh.vertices.map(([x, y, z]) => `     <vertex x="${formatNumber(x)}" y="${formatNumber(y)}" z="${formatNumber(z)}"/>`),
+    '    </vertices>',
+    '    <triangles>',
+    ...mesh.triangles.map(([v1, v2, v3]) => `     <triangle v1="${v1}" v2="${v2}" v3="${v3}"/>`),
+    '    </triangles>',
+    '   </mesh>',
+    '  </object>',
+  ].join('\n')
+}
+
+function format3mfTransform(x: number, y: number, z: number) {
+  return `1 0 0 0 1 0 0 0 1 ${formatNumber(x)} ${formatNumber(y)} ${formatNumber(z)}`
+}
+
+function format4x4Matrix(x: number, y: number, z: number) {
+  return `1 0 0 ${formatNumber(x)} 0 1 0 ${formatNumber(y)} 0 0 1 ${formatNumber(z)} 0 0 0 1`
+}
+
+function buildPseudoUuid(part1: number, part2: number, part3: number, part4: number, tail: number) {
+  const a = (part1 >>> 0).toString(16).padStart(8, '0').slice(-8)
+  const b = (part2 >>> 0).toString(16).padStart(4, '0').slice(-4)
+  const c = (0x4000 | (part3 & 0x0fff)).toString(16).padStart(4, '0').slice(-4)
+  const d = (0x8000 | (part4 & 0x0fff)).toString(16).padStart(4, '0').slice(-4)
+  const e = Math.abs(tail).toString(16).padStart(12, '0').slice(-12)
+  return `${a}-${b}-${c}-${d}-${e}`
+}
+
 function buildBambuModelSettingsConfig(
   objects: BambuModelSettingsObject[],
   plates: BambuPlateAssignment[] = [],
@@ -2661,13 +2889,22 @@ function buildBambuModelSettingsConfig(
       `  <object id="${object.id}">`,
       `    <metadata key="name" value="${escapeXmlAttribute(object.name)}"/>`,
       ...(object.extruder ? [`    <metadata key="extruder" value="${object.extruder}"/>`] : []),
+      ...(object.faceCount != null ? [`    <metadata face_count="${object.faceCount}"/>`] : []),
       ...(object.parts ?? []).map((part) => [
         `    <part id="${part.id}" subtype="normal_part">`,
         `      <metadata key="name" value="${escapeXmlAttribute(part.name)}"/>`,
+        ...(part.matrix ? [`      <metadata key="matrix" value="${part.matrix}"/>`] : []),
+        ...(part.sourceFile ? [`      <metadata key="source_file" value="${escapeXmlAttribute(part.sourceFile)}"/>`] : []),
+        ...(part.sourceObjectId != null ? [`      <metadata key="source_object_id" value="${part.sourceObjectId}"/>`] : []),
+        ...(part.sourceVolumeId != null ? [`      <metadata key="source_volume_id" value="${part.sourceVolumeId}"/>`] : []),
+        ...(part.sourceOffsetX != null ? [`      <metadata key="source_offset_x" value="${formatNumber(part.sourceOffsetX)}"/>`] : []),
+        ...(part.sourceOffsetY != null ? [`      <metadata key="source_offset_y" value="${formatNumber(part.sourceOffsetY)}"/>`] : []),
+        ...(part.sourceOffsetZ != null ? [`      <metadata key="source_offset_z" value="${formatNumber(part.sourceOffsetZ)}"/>`] : []),
         `      <metadata key="extruder" value="${part.extruder}"/>`,
         `      <metadata key="wall_filament" value="${part.extruder}"/>`,
         `      <metadata key="sparse_infill_filament" value="${part.extruder}"/>`,
         `      <metadata key="solid_infill_filament" value="${part.extruder}"/>`,
+        ...(part.faceCount != null ? [`      <mesh_stat face_count="${part.faceCount}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>`] : []),
         '    </part>',
       ].join('\n')),
       '  </object>',
@@ -2684,7 +2921,7 @@ function buildBambuModelSettingsConfig(
         '    <model_instance>',
         `      <metadata key="object_id" value="${objectId}"/>`,
         '      <metadata key="instance_id" value="0"/>',
-        `      <metadata key="identify_id" value="${objectIndex + 1}"/>`,
+        `      <metadata key="identify_id" value="${plate.identifyIds[objectIndex] ?? (objectIndex + 1)}"/>`,
         '    </model_instance>',
       ].join('\n')),
       '  </plate>',
@@ -2830,10 +3067,16 @@ function concatUint8Arrays(chunks: Uint8Array[]) {
 }
 
 function bytesToBase64(bytes: Uint8Array) {
+  // #region debug-point C:bytes-to-base64-start
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'C', location: 'generator.ts:bytesToBase64:start', msg: '[DEBUG] start bytesToBase64', data: { byteLength: bytes.byteLength }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   let binary = ''
   bytes.forEach((value) => {
     binary += String.fromCharCode(value)
   })
+  // #region debug-point C:bytes-to-base64-finish
+  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'C', location: 'generator.ts:bytesToBase64:finish', msg: '[DEBUG] finish bytesToBase64 string accumulation', data: { binaryLength: binary.length }, ts: Date.now() }) }).catch(() => {})
+  // #endregion
   return btoa(binary)
 }
 
