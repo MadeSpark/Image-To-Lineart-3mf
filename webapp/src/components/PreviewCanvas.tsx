@@ -52,7 +52,6 @@ export function PreviewCanvas({
   onResetLineartEdits,
   onPickTargetColor,
 }: PreviewCanvasProps) {
-  const imageRef = useRef<HTMLImageElement | null>(null)
   const vectorSvgRef = useRef<SVGSVGElement | null>(null)
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -144,19 +143,13 @@ export function PreviewCanvas({
     setBrushCursorPoint(null)
   }, [viewResetKey])
 
-  const src = (() => {
-    if (!artwork) return null
-    if (previewMode === '原图') return sourceImage?.dataUrl ?? artwork.previews.lineartDataUrl
-    return null
-  })()
-  const isRasterPreview = previewMode === '原图' && Boolean(sourceImage)
   const canPickColor = Boolean(sourceImage && previewMode === '原图' && !processing)
   const displayColor = draftPickedColor ?? targetColor
   const vectorScene = useMemo(
-    () => (artwork && !isRasterPreview && !isThreeDimensionalPreview
-      ? buildVectorPreviewScene(artwork, previewMode, baseplateSettings)
+    () => ((!isThreeDimensionalPreview && (artwork || sourceImage))
+      ? buildVectorPreviewScene(artwork, sourceImage, previewMode, baseplateSettings)
       : null),
-    [artwork, baseplateSettings, isRasterPreview, isThreeDimensionalPreview, previewMode],
+    [artwork, baseplateSettings, isThreeDimensionalPreview, previewMode, sourceImage],
   )
   const vectorViewBox = useMemo(
     () => (vectorScene
@@ -164,9 +157,41 @@ export function PreviewCanvas({
       : null),
     [vectorFrameSize, vectorScene, viewTransform],
   )
-  const hasPreviewContent = Boolean(src || vectorScene)
+  const hasPreviewContent = Boolean(vectorScene)
   const effectiveHasPreviewContent = isThreeDimensionalPreview ? Boolean(artwork) : hasPreviewContent
   const canEditLineart = previewMode === '线稿' && Boolean(vectorScene) && !processing
+  const brushCursorOverlay = useMemo(() => {
+    if (!canEditLineart || !brushCursorPoint || lineartTool === 'pan' || !vectorViewBox) {
+      return null
+    }
+
+    const svg = vectorSvgRef.current
+    const viewport = viewportRef.current
+    if (!svg || !viewport) {
+      return null
+    }
+
+    const svgRect = svg.getBoundingClientRect()
+    const viewportRect = viewport.getBoundingClientRect()
+    if (svgRect.width <= 0 || svgRect.height <= 0) {
+      return null
+    }
+
+    const scale = Math.min(
+      svgRect.width / Math.max(vectorViewBox.width, 1e-6),
+      svgRect.height / Math.max(vectorViewBox.height, 1e-6),
+    )
+    const contentWidth = vectorViewBox.width * scale
+    const contentHeight = vectorViewBox.height * scale
+    const offsetX = (svgRect.width - contentWidth) * 0.5
+    const offsetY = (svgRect.height - contentHeight) * 0.5
+
+    return {
+      left: svgRect.left - viewportRect.left + offsetX + (brushCursorPoint.x - vectorViewBox.minX) * scale,
+      top: svgRect.top - viewportRect.top + offsetY + (brushCursorPoint.y - vectorViewBox.minY) * scale,
+      diameter: Math.max(brushSizeMm * 2 * scale, 10),
+    }
+  }, [brushCursorPoint, brushSizeMm, canEditLineart, lineartTool, vectorViewBox])
 
   const zoomViewport = (clientX: number, clientY: number, deltaY: number) => {
     const viewport = viewportRef.current
@@ -232,15 +257,25 @@ export function PreviewCanvas({
   }, [vectorScene, previewMode])
 
   const sampleColor = (clientX: number, clientY: number) => {
-    const image = imageRef.current
     const sampleCanvas = sampleCanvasRef.current
-    if (!image || !sampleCanvas) return null
+    if (!sampleCanvas || !vectorScene) return null
 
-    const rect = image.getBoundingClientRect()
-    if (rect.width <= 0 || rect.height <= 0) return null
+    const point = getVectorPointFromClient(clientX, clientY)
+    if (!point) return null
 
-    const ratioX = (clientX - rect.left) / rect.width
-    const ratioY = (clientY - rect.top) / rect.height
+    const imageLayer = vectorScene.imageLayer
+    if (!imageLayer) return null
+    if (
+      point.x < imageLayer.x
+      || point.x > imageLayer.x + imageLayer.width
+      || point.y < imageLayer.y
+      || point.y > imageLayer.y + imageLayer.height
+    ) {
+      return null
+    }
+
+    const ratioX = (point.x - imageLayer.x) / Math.max(imageLayer.width, 1e-6)
+    const ratioY = (point.y - imageLayer.y) / Math.max(imageLayer.height, 1e-6)
     const x = Math.min(sampleCanvas.width - 1, Math.max(0, Math.round(ratioX * (sampleCanvas.width - 1))))
     const y = Math.min(sampleCanvas.height - 1, Math.max(0, Math.round(ratioY * (sampleCanvas.height - 1))))
     const context = sampleCanvas.getContext('2d', { willReadFrequently: true })
@@ -470,25 +505,7 @@ export function PreviewCanvas({
               />
             )}
 
-            {isRasterPreview && (
-              <div
-                style={{
-                  transform: `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale})`,
-                  transformOrigin: 'center center',
-                  willChange: 'transform',
-                }}
-              >
-                <img
-                  ref={imageRef}
-                  src={src}
-                  alt="线稿底板预览"
-                  draggable={false}
-                  className="max-h-[calc(100%-8px)] max-w-full object-contain select-none"
-                />
-              </div>
-            )}
-
-            {!isRasterPreview && vectorScene && (
+            {vectorScene && (
               <div
                 ref={vectorFrameRef}
                 key={`${previewMode}-${vectorScene.viewWidth}-${vectorScene.viewHeight}-${vectorScene.layers.map((layer) => layer.id).join('-')}`}
@@ -509,7 +526,18 @@ export function PreviewCanvas({
                   className="block h-full w-full overflow-visible"
                   preserveAspectRatio="xMidYMid meet"
                   shapeRendering="geometricPrecision"
+                  style={{ isolation: 'isolate' }}
                 >
+                  {vectorScene.imageLayer && (
+                    <image
+                      href={vectorScene.imageLayer.href}
+                      x={formatVectorNumber(vectorScene.imageLayer.x)}
+                      y={formatVectorNumber(vectorScene.imageLayer.y)}
+                      width={formatVectorNumber(vectorScene.imageLayer.width)}
+                      height={formatVectorNumber(vectorScene.imageLayer.height)}
+                      preserveAspectRatio="none"
+                    />
+                  )}
                   {vectorScene.layers.map((layer) => (
                     <g
                       key={layer.id}
@@ -523,31 +551,34 @@ export function PreviewCanvas({
                     <polyline
                       points={liveStrokePoints.map((point) => `${formatVectorNumber(point.x)},${formatVectorNumber(point.y)}`).join(' ')}
                       fill="none"
-                      stroke={lineartTool === 'eraser' ? '#ef4444' : '#0088ff'}
+                      stroke={lineartTool === 'eraser' ? '#ef4444' : '#000000'}
                       strokeWidth={formatVectorNumber(brushSizeMm * 2)}
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      opacity={0.34}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  )}
-                  {canEditLineart && brushCursorPoint && lineartTool !== 'pan' && (
-                    <circle
-                      cx={formatVectorNumber(brushCursorPoint.x)}
-                      cy={formatVectorNumber(brushCursorPoint.y)}
-                      r={formatVectorNumber(brushSizeMm)}
-                      fill="none"
-                      stroke={lineartTool === 'eraser' ? '#ef4444' : '#0088ff'}
-                      strokeWidth="0.45"
-                      strokeDasharray={lineartTool === 'eraser' ? '1.2 0.9' : undefined}
-                      opacity={0.92}
-                      vectorEffect="non-scaling-stroke"
+                      opacity={lineartTool === 'eraser' ? 0.85 : 1}
                     />
                   )}
                 </svg>
               </div>
             )}
           </div>
+        )}
+
+        {brushCursorOverlay && (
+          <div
+            className="pointer-events-none absolute rounded-full"
+            style={{
+              left: brushCursorOverlay.left,
+              top: brushCursorOverlay.top,
+              width: brushCursorOverlay.diameter,
+              height: brushCursorOverlay.diameter,
+              transform: 'translate(-50%, -50%)',
+              border: `${lineartTool === 'eraser' ? 2.2 : 2.4}px ${lineartTool === 'eraser' ? 'dashed' : 'solid'} #ffffff`,
+              borderRadius: '9999px',
+              mixBlendMode: 'difference',
+              opacity: 1,
+            }}
+          />
         )}
 
         {artwork && !processing && (
@@ -670,7 +701,8 @@ function rgbToHex(r: number, g: number, b: number) {
 }
 
 function buildVectorPreviewScene(
-  artwork: ProcessedArtwork,
+  artwork: ProcessedArtwork | null,
+  sourceImage: SourceImage | null,
   previewMode: PreviewMode,
   baseplateSettings: BaseplateSettings,
 ) {
@@ -681,13 +713,30 @@ function buildVectorPreviewScene(
     path: string
   }> = []
 
-  if (previewMode === '原图' || previewMode === '线稿') {
+  const viewWidth = artwork?.boardWidthMm ?? sourceImage?.width ?? 1
+  const viewHeight = artwork?.boardHeightMm ?? sourceImage?.height ?? 1
+  const imageLayer = previewMode === '原图' && sourceImage
+    ? {
+      href: sourceImage.dataUrl,
+      ...fitImageInScene(
+        sourceImage.width,
+        sourceImage.height,
+        viewWidth,
+        viewHeight,
+      ),
+    }
+    : null
+
+  if (previewMode === '原图') {
+    // Render the source image in the same scene coordinates as vector previews
+    // so zoom/pan stay stable when switching modes.
+  } else if (previewMode === '线稿' && artwork) {
     layers.push({
       id: 'lineart',
       fill: baseplateSettings.lineColor,
       path: loopsToSvgPath(artwork.lineLoops),
     })
-  } else if (previewMode === '底板预览') {
+  } else if (previewMode === '底板预览' && artwork) {
     layers.push({
       id: 'baseplate',
       fill: baseplateSettings.baseColor,
@@ -699,7 +748,7 @@ function buildVectorPreviewScene(
       opacity: 0.22,
       path: loopsToSvgPath(artwork.lineLoops),
     })
-  } else {
+  } else if (artwork) {
     layers.push({
       id: 'baseplate',
       fill: baseplateSettings.baseColor,
@@ -713,9 +762,32 @@ function buildVectorPreviewScene(
   }
 
   return {
-    viewWidth: artwork.boardWidthMm,
-    viewHeight: artwork.boardHeightMm,
+    viewWidth,
+    viewHeight,
+    imageLayer,
     layers: layers.filter((layer) => layer.path),
+  }
+}
+
+function fitImageInScene(
+  imageWidth: number,
+  imageHeight: number,
+  sceneWidth: number,
+  sceneHeight: number,
+) {
+  const safeImageWidth = Math.max(imageWidth, 1)
+  const safeImageHeight = Math.max(imageHeight, 1)
+  const safeSceneWidth = Math.max(sceneWidth, 1)
+  const safeSceneHeight = Math.max(sceneHeight, 1)
+  const scale = Math.min(safeSceneWidth / safeImageWidth, safeSceneHeight / safeImageHeight)
+  const width = safeImageWidth * scale
+  const height = safeImageHeight * scale
+
+  return {
+    x: (safeSceneWidth - width) / 2,
+    y: (safeSceneHeight - height) / 2,
+    width,
+    height,
   }
 }
 

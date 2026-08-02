@@ -19,7 +19,7 @@ export const defaultLineartSettings: LineartSettings = {
   threshold: 160,
   targetColor: '#000000',
   despeckle: 24,
-  strokeWidth: 0.4,
+  strokeWidth: 0,
   smoothing: 36,
   invert: false,
   mirror: false,

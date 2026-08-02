@@ -265,7 +265,7 @@ export function UploadPanel({
             </div>
           )}
           <SliderRow
-            label="线条宽度"
+            label="线条加粗"
             min={0}
             max={4}
             step={0.2}

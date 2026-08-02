@@ -1757,6 +1757,15 @@ function chooseNextEdge(previousDir: number, candidates: number[], edges: Array<
 }
 
 function smoothLoops(loops: VectorLoop[], smoothing: number) {
+  if (smoothing <= 0) {
+    return loops
+      .map((loop) => ({
+        ...loop,
+        points: sanitizeLoop(loop.points),
+      }))
+      .filter((loop) => loop.points.length >= 3)
+  }
+
   const normalized = clamp(smoothing / 100, 0, 1)
   const smoothingPasses = Math.min(4, Math.round(smoothing / 18))
   const cornerPrunePasses = Math.min(3, Math.round(smoothing / 30))

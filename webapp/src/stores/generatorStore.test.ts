@@ -11,7 +11,7 @@ describe('useGeneratorStore persistence', () => {
 
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(160)
-    expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(0.4)
+    expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(0)
     expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('ratio')
     expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(100)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
