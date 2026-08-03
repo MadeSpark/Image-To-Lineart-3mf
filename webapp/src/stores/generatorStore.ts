@@ -4,6 +4,7 @@ import type {
   ExtrudeSettings,
   ImportedLineart,
   LineartSettings,
+  NumberingSettings,
   PrintBedSettings,
   PreviewMode,
   SourceImage,
@@ -50,6 +51,15 @@ export const defaultPrintBedSettings: PrintBedSettings = {
   spacingMm: 8,
 }
 
+export const defaultNumberingSettings: NumberingSettings = {
+  enabled: false,
+  startNumber: 1,
+  fontSizeMm: 5,
+  marginMm: 3,
+  horizontalAlign: 'right',
+  verticalAlign: 'bottom',
+}
+
 interface GeneratorState {
   sourceImage: SourceImage | null
   importedLineart: ImportedLineart | null
@@ -58,6 +68,7 @@ interface GeneratorState {
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   printBedSettings: PrintBedSettings
+  numberingSettings: NumberingSettings
   customThreeMfProfile: ThreeMfTemplateProfile | null
   setSourceImage: (sourceImage: SourceImage | null) => void
   setImportedLineart: (importedLineart: ImportedLineart | null) => void
@@ -66,6 +77,7 @@ interface GeneratorState {
   updateBaseplateSettings: (patch: Partial<BaseplateSettings>) => void
   updateExtrudeSettings: (patch: Partial<ExtrudeSettings>) => void
   updatePrintBedSettings: (patch: Partial<PrintBedSettings>) => void
+  updateNumberingSettings: (patch: Partial<NumberingSettings>) => void
   setCustomThreeMfProfile: (profile: ThreeMfTemplateProfile | null) => void
   applyImportedSettings: (settings: GeneratorSettingsPatch) => void
   resetAllSettings: (defaultBedPatch?: Partial<PrintBedSettings>) => void
@@ -76,6 +88,7 @@ export interface PersistedGeneratorSettings {
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   printBedSettings: PrintBedSettings
+  numberingSettings?: NumberingSettings
   customThreeMfProfile?: ThreeMfTemplateProfile | null
 }
 
@@ -89,6 +102,7 @@ export interface GeneratorSettingsPatch {
   baseplateSettings?: Partial<BaseplateSettings>
   extrudeSettings?: Partial<ExtrudeSettings>
   printBedSettings?: Partial<PrintBedSettings>
+  numberingSettings?: Partial<NumberingSettings>
   customThreeMfProfile?: ThreeMfTemplateProfile | null
 }
 
@@ -115,6 +129,10 @@ function normalizePersistedSettings(parsed: GeneratorSettingsPatch) {
       ...defaultPrintBedSettings,
       ...parsed.printBedSettings,
     },
+    numberingSettings: {
+      ...defaultNumberingSettings,
+      ...parsed.numberingSettings,
+    },
     customThreeMfProfile: parsed.customThreeMfProfile ?? null,
   }
 }
@@ -125,6 +143,7 @@ export function buildPersistedSettingsSnapshot(settings: PersistedGeneratorSetti
     baseplateSettings: settings.baseplateSettings,
     extrudeSettings: settings.extrudeSettings,
     printBedSettings: settings.printBedSettings,
+    numberingSettings: settings.numberingSettings ?? defaultNumberingSettings,
     customThreeMfProfile: settings.customThreeMfProfile ?? null,
   }
 }
@@ -169,6 +188,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   baseplateSettings: persistedSettings?.baseplateSettings ?? defaultBaseplateSettings,
   extrudeSettings: persistedSettings?.extrudeSettings ?? defaultExtrudeSettings,
   printBedSettings: persistedSettings?.printBedSettings ?? defaultPrintBedSettings,
+  numberingSettings: persistedSettings?.numberingSettings ?? defaultNumberingSettings,
   customThreeMfProfile: persistedSettings?.customThreeMfProfile ?? null,
   setSourceImage: (sourceImage) => set({ sourceImage, importedLineart: null }),
   setImportedLineart: (importedLineart) => set({ importedLineart, sourceImage: null }),
@@ -183,6 +203,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
+      numberingSettings: get().numberingSettings,
       customThreeMfProfile: get().customThreeMfProfile,
     }))
     return { lineartSettings }
@@ -197,6 +218,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
+      numberingSettings: get().numberingSettings,
       customThreeMfProfile: get().customThreeMfProfile,
     }))
     return { baseplateSettings }
@@ -211,6 +233,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: get().baseplateSettings,
       extrudeSettings,
       printBedSettings: get().printBedSettings,
+      numberingSettings: get().numberingSettings,
       customThreeMfProfile: get().customThreeMfProfile,
     }))
     return { extrudeSettings }
@@ -225,9 +248,25 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings,
+      numberingSettings: get().numberingSettings,
       customThreeMfProfile: get().customThreeMfProfile,
     }))
     return { printBedSettings }
+  }),
+  updateNumberingSettings: (patch) => set((state) => {
+    const numberingSettings = {
+      ...state.numberingSettings,
+      ...patch,
+    }
+    savePersistedSettings(buildPersistedSettingsSnapshot({
+      lineartSettings: get().lineartSettings,
+      baseplateSettings: get().baseplateSettings,
+      extrudeSettings: get().extrudeSettings,
+      printBedSettings: get().printBedSettings,
+      numberingSettings,
+      customThreeMfProfile: get().customThreeMfProfile,
+    }))
+    return { numberingSettings }
   }),
   setCustomThreeMfProfile: (customThreeMfProfile) => {
     savePersistedSettings(buildPersistedSettingsSnapshot({
@@ -235,6 +274,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: get().baseplateSettings,
       extrudeSettings: get().extrudeSettings,
       printBedSettings: get().printBedSettings,
+      numberingSettings: get().numberingSettings,
       customThreeMfProfile,
     }))
     set({ customThreeMfProfile })
@@ -248,6 +288,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: normalized.baseplateSettings,
       extrudeSettings: normalized.extrudeSettings,
       printBedSettings: normalized.printBedSettings,
+      numberingSettings: normalized.numberingSettings,
       customThreeMfProfile: normalized.customThreeMfProfile,
     })
   },
@@ -261,6 +302,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: defaultBaseplateSettings,
       extrudeSettings: defaultExtrudeSettings,
       printBedSettings,
+      numberingSettings: defaultNumberingSettings,
       customThreeMfProfile: null,
     }))
     set({
@@ -269,6 +311,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       baseplateSettings: defaultBaseplateSettings,
       extrudeSettings: defaultExtrudeSettings,
       printBedSettings,
+      numberingSettings: defaultNumberingSettings,
       customThreeMfProfile: null,
     })
   },

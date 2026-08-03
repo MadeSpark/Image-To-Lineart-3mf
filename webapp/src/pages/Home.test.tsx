@@ -41,6 +41,14 @@ describe('Home', () => {
         depthMm: 256,
         spacingMm: 8,
       },
+      numberingSettings: {
+        enabled: false,
+        startNumber: 1,
+        fontSizeMm: 5,
+        marginMm: 3,
+        horizontalAlign: 'right',
+        verticalAlign: 'bottom',
+      },
     })
   })
 

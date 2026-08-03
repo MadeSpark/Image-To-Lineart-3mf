@@ -78,6 +78,15 @@ export interface PrintBedSettings {
   spacingMm: number
 }
 
+export interface NumberingSettings {
+  enabled: boolean
+  startNumber: number
+  fontSizeMm: number
+  marginMm: number
+  horizontalAlign: 'left' | 'center' | 'right'
+  verticalAlign: 'top' | 'center' | 'bottom'
+}
+
 export interface ThreeMfTemplateProfile {
   sourceName: string
   applicationName: string

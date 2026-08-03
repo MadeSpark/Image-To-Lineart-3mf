@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# 环境变量配置（包含 Worker URL 等部署相关配置，不应提交到仓库）
+.env
+.env.local
+.env.*.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

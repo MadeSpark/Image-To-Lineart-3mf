@@ -2,6 +2,14 @@
 
 import type * as React from 'react'
 
+interface ImportMetaEnv {
+  readonly VITE_VISITOR_COUNTER_URL?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
 declare global {
   const __APP_VERSION__: string
 

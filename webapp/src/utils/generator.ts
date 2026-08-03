@@ -5,6 +5,7 @@ import type {
   GifFrameSource,
   ImportedLineart,
   LineartSettings,
+  NumberingSettings,
   PrintBedLayout,
   PrintBedPlacementItem,
   PrintBedSettings,
@@ -1007,6 +1008,174 @@ export function rebuildArtworkWithLineLoops(
       lineSegments: nextLineLoops.reduce((sum, loop) => sum + loop.points.length, 0),
     },
   }
+}
+
+// 7-segment digit renderer for numbering mode.
+// Segment layout:
+//  aaa
+// f   b
+// f   b
+//  ggg
+// e   c
+// e   c
+//  ddd
+const DIGIT_SEGMENTS: Record<string, number[]> = {
+  '0': [0, 1, 2, 3, 4, 5],
+  '1': [1, 2],
+  '2': [0, 1, 3, 4, 6],
+  '3': [0, 1, 2, 3, 6],
+  '4': [1, 2, 5, 6],
+  '5': [0, 2, 3, 5, 6],
+  '6': [0, 2, 3, 4, 5, 6],
+  '7': [0, 1, 2],
+  '8': [0, 1, 2, 3, 4, 5, 6],
+  '9': [0, 1, 2, 3, 5, 6],
+}
+
+function buildSegmentPolygon(
+  segmentIndex: number,
+  originX: number,
+  originY: number,
+  w: number,
+  h: number,
+  t: number,
+): VectorLoop | null {
+  const halfH = h * 0.5
+  const halfT = t * 0.5
+  const innerW = w - t
+  let pts: VectorPoint[]
+
+  switch (segmentIndex) {
+    case 0: // a — top horizontal
+      pts = [
+        { x: t, y: 0 }, { x: innerW, y: 0 },
+        { x: innerW, y: t }, { x: t, y: t },
+      ]
+      break
+    case 1: // b — upper-right vertical
+      pts = [
+        { x: innerW, y: t }, { x: w, y: t },
+        { x: w, y: halfH - halfT }, { x: innerW, y: halfH - halfT },
+      ]
+      break
+    case 2: // c — lower-right vertical
+      pts = [
+        { x: innerW, y: halfH + halfT }, { x: w, y: halfH + halfT },
+        { x: w, y: h - t }, { x: innerW, y: h - t },
+      ]
+      break
+    case 3: // d — bottom horizontal
+      pts = [
+        { x: t, y: h - t }, { x: innerW, y: h - t },
+        { x: innerW, y: h }, { x: t, y: h },
+      ]
+      break
+    case 4: // e — lower-left vertical
+      pts = [
+        { x: 0, y: halfH + halfT }, { x: t, y: halfH + halfT },
+        { x: t, y: h - t }, { x: 0, y: h - t },
+      ]
+      break
+    case 5: // f — upper-left vertical
+      pts = [
+        { x: 0, y: t }, { x: t, y: t },
+        { x: t, y: halfH - halfT }, { x: 0, y: halfH - halfT },
+      ]
+      break
+    case 6: // g — middle horizontal
+      pts = [
+        { x: t, y: halfH - halfT }, { x: innerW, y: halfH - halfT },
+        { x: innerW, y: halfH + halfT }, { x: t, y: halfH + halfT },
+      ]
+      break
+    default:
+      return null
+  }
+
+  return {
+    closed: true,
+    points: pts.map((p) => ({ x: p.x + originX, y: p.y + originY })),
+  }
+}
+
+export function buildNumberLoops(
+  number: number,
+  boardWidthMm: number,
+  boardHeightMm: number,
+  settings: NumberingSettings,
+): VectorLoop[] {
+  const safeNumber = Math.max(0, Math.floor(number))
+  const text = String(safeNumber)
+  if (!text.length) return []
+
+  const h = Math.max(2, settings.fontSizeMm)
+  const w = h * 0.6
+  const t = h * 0.16
+  const gap = h * 0.2
+  const totalWidth = text.length * w + (text.length - 1) * gap
+
+  const margin = Math.max(0.5, settings.marginMm)
+
+  let blockX: number
+  switch (settings.horizontalAlign) {
+    case 'left':
+      blockX = margin
+      break
+    case 'center':
+      blockX = (boardWidthMm - totalWidth) * 0.5
+      break
+    default:
+      blockX = boardWidthMm - margin - totalWidth
+      break
+  }
+
+  let blockY: number
+  switch (settings.verticalAlign) {
+    case 'top':
+      blockY = margin
+      break
+    case 'center':
+      blockY = (boardHeightMm - h) * 0.5
+      break
+    default:
+      blockY = boardHeightMm - margin - h
+      break
+  }
+
+  const loops: VectorLoop[] = []
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    const segments = DIGIT_SEGMENTS[ch]
+    if (!segments) continue
+    const digitX = blockX + i * (w + gap)
+    for (const seg of segments) {
+      const loop = buildSegmentPolygon(seg, digitX, blockY, w, h, t)
+      if (loop) loops.push(loop)
+    }
+  }
+
+  return loops
+}
+
+export function applyNumberingToArtwork(
+  artwork: ProcessedArtwork,
+  settings: BaseplateSettings,
+  numbering: NumberingSettings,
+  number: number,
+): ProcessedArtwork {
+  if (!numbering.enabled) return artwork
+  const numberLoops = buildNumberLoops(
+    number,
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+    numbering,
+  )
+  if (!numberLoops.length) return artwork
+  return rebuildArtworkWithLineLoops(
+    artwork,
+    [...artwork.lineLoops, ...numberLoops],
+    settings,
+  )
 }
 
 export function applyLineartStrokeEdit(
@@ -2931,6 +3100,11 @@ function buildCombined3mfModelXml(
 }
 
 function getCombinedPlateBuildOffset(plateIndex: number, printBedSettings: PrintBedSettings) {
+  // Bambu Studio 多盘布局采用 2 列网格，坐标在所有盘之间共享：
+  //   Plate 1 (0,0)    Plate 2 (+stepX, 0)
+  //   Plate 3 (0,-stepY) Plate 4 (+stepX,-stepY)
+  // X 向右递增；Y 向下递减（向下为负方向）。
+  // 详见 Bambu Studio 3MF 文件格式研究：盘间偏移约为 bed 尺寸 + 间距。
   const spacing = Math.max(printBedSettings.spacingMm, 8)
   const stepX = printBedSettings.widthMm + spacing * 6
   const stepY = printBedSettings.depthMm + spacing * 6
@@ -2939,7 +3113,7 @@ function getCombinedPlateBuildOffset(plateIndex: number, printBedSettings: Print
 
   return {
     xMm: column * stepX,
-    yMm: row * stepY,
+    yMm: -row * stepY,
   }
 }
 

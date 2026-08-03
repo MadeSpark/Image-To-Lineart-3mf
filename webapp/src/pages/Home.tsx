@@ -1,9 +1,10 @@
 import { strToU8, zipSync } from 'fflate'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Sparkles } from 'lucide-react'
 import { BatchExportDialog } from '@/components/BatchExportDialog'
 import { ExportPanel } from '@/components/ExportPanel'
 import { GifFramePicker } from '@/components/GifFramePicker'
+import { NumberingPanel } from '@/components/NumberingPanel'
 import { PalettePanel } from '@/components/PalettePanel'
 import { PreviewCanvas } from '@/components/PreviewCanvas'
 import { PrintBedPanel } from '@/components/PrintBedPanel'
@@ -19,6 +20,7 @@ import type { GeneratorSettingsPatch, GeneratorSettingsPayload } from '@/stores/
 import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, VectorLoop, VectorPoint } from '@/types/generator'
 import {
   applyLineartStrokeEdit,
+  applyNumberingToArtwork,
   build3mfPackage,
   buildCombined3mfPackage,
   buildLineartSvgDocument,
@@ -60,6 +62,7 @@ export default function Home() {
     baseplateSettings,
     extrudeSettings,
     printBedSettings,
+    numberingSettings,
     customThreeMfProfile,
     setSourceImage,
     setImportedLineart,
@@ -68,6 +71,7 @@ export default function Home() {
     updateBaseplateSettings,
     updateExtrudeSettings,
     updatePrintBedSettings,
+    updateNumberingSettings,
     setCustomThreeMfProfile,
     applyImportedSettings,
     resetAllSettings,
@@ -87,6 +91,34 @@ export default function Home() {
   const [thanksDialogOpen, setThanksDialogOpen] = useState(false)
   const [qaqModeEnabled, setQaqModeEnabled] = useState(false)
   const [lineartOverrides, setLineartOverrides] = useState<Record<string, VectorLoop[]>>({})
+  const [visitorCount, setVisitorCount] = useState<number | null>(null)
+  const visitorCountRecordedRef = useRef(false)
+
+  useEffect(() => {
+    // React 18 StrictMode 在开发环境会双调用 useEffect，用 ref 保证每次组件实例只计数一次。
+    if (visitorCountRecordedRef.current) return
+    visitorCountRecordedRef.current = true
+
+    const counterUrl = (import.meta.env.VITE_VISITOR_COUNTER_URL ?? '').trim().replace(/\/$/, '')
+    if (counterUrl) {
+      // 优先调用全站计数 Worker
+      fetch(`${counterUrl}/visit`, { method: 'GET', cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          if (data && typeof data.count === 'number' && data.count > 0) {
+            setVisitorCount(data.count)
+          }
+        })
+        .catch(() => {
+          // Worker 不可用时回退到本地计数
+          setVisitorCount(recordLocalVisit())
+        })
+      return
+    }
+
+    // 未配置 Worker URL，使用本地浏览器计数
+    setVisitorCount(recordLocalVisit())
+  }, [])
 
   const activeEntry = useMemo(
     () => entries.find((entry) => entry.id === activeEntryId) ?? null,
@@ -201,12 +233,23 @@ export default function Home() {
     extrudeSettings,
   )
   const activeLineartOverride = activeEntryId ? lineartOverrides[activeEntryId] : undefined
-  const effectiveArtwork = useMemo(
+  const baseArtwork = useMemo(
     () => (artwork && activeLineartOverride
       ? rebuildArtworkWithLineLoops(artwork, activeLineartOverride, baseplateSettings)
       : artwork),
     [activeLineartOverride, artwork, baseplateSettings],
   )
+  const effectiveArtwork = useMemo(() => {
+    if (!baseArtwork || !numberingSettings.enabled) return baseArtwork
+    const activeIndex = entries.findIndex((entry) => entry.id === activeEntryId)
+    if (activeIndex < 0) return baseArtwork
+    return applyNumberingToArtwork(
+      baseArtwork,
+      baseplateSettings,
+      numberingSettings,
+      numberingSettings.startNumber + activeIndex,
+    )
+  }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings])
 
   useEffect(() => {
     setLineartOverrides((current) => {
@@ -262,7 +305,7 @@ export default function Home() {
     return () => {
       cancelled = true
     }
-  }, [activeEntry, artwork, baseplateSettings, effectiveArtwork, entries, extrudeSettings, lineartOverrides, lineartSettings])
+  }, [activeEntry, artwork, baseplateSettings, effectiveArtwork, entries, extrudeSettings, lineartOverrides, lineartSettings, numberingSettings])
 
   useEffect(() => {
     if (!qaqModeEnabled) return
@@ -394,7 +437,7 @@ export default function Home() {
   async function buildProcessedItems(targets: BatchSourceItem[]) {
     const results: ProcessedBatchItem[] = []
 
-    for (const entry of targets) {
+    for (const [index, entry] of targets.entries()) {
       const processedArtwork = entry.id === activeEntry?.id && artwork
         ? artwork
         : await processArtwork({
@@ -406,12 +449,20 @@ export default function Home() {
         })
 
       const lineartOverride = lineartOverrides[entry.id]
-      results.push({
-        entry,
-        artwork: lineartOverride
-          ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings)
-          : processedArtwork,
-      })
+      let finalArtwork = lineartOverride
+        ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings)
+        : processedArtwork
+
+      if (numberingSettings.enabled) {
+        finalArtwork = applyNumberingToArtwork(
+          finalArtwork,
+          baseplateSettings,
+          numberingSettings,
+          numberingSettings.startNumber + index,
+        )
+      }
+
+      results.push({ entry, artwork: finalArtwork })
     }
 
     return results
@@ -569,6 +620,7 @@ export default function Home() {
           baseplateSettings,
           extrudeSettings,
           printBedSettings,
+          numberingSettings,
           customThreeMfProfile,
         }),
       },
@@ -598,12 +650,12 @@ export default function Home() {
   }
 
   const handleApplyLineartStroke = (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => {
-    if (!activeEntry || !effectiveArtwork || previewMode !== '线稿' || !points.length) {
+    if (!activeEntry || !baseArtwork || previewMode !== '线稿' || !points.length) {
       return
     }
 
     const editedArtwork = applyLineartStrokeEdit(
-      effectiveArtwork,
+      baseArtwork,
       baseplateSettings,
       points,
       radiusMm,
@@ -734,6 +786,11 @@ export default function Home() {
               settings={extrudeSettings}
               onUpdateSettings={updateExtrudeSettings}
             />
+            <NumberingPanel
+              settings={numberingSettings}
+              batchCount={entries.length}
+              onUpdateSettings={updateNumberingSettings}
+            />
             <PrintBedPanel
               settings={printBedSettings}
               items={placementPreviewItems.map((item) => ({
@@ -787,6 +844,7 @@ export default function Home() {
 
       {welcomeDialogOpen && (
         <WelcomeDialog
+          visitorCount={visitorCount}
           onSupportNow={handleSupportNow}
           onAlreadySupported={handleAlreadySupported}
           onCruelReject={handleCruelReject}
@@ -806,14 +864,19 @@ export default function Home() {
 }
 
 function WelcomeDialog({
+  visitorCount,
   onSupportNow,
   onAlreadySupported,
   onCruelReject,
 }: {
+  visitorCount: number | null
   onSupportNow: () => void
   onAlreadySupported: () => void
   onCruelReject: () => void
 }) {
+  const visitorLine = visitorCount && visitorCount > 0
+    ? `你是第 ${visitorCount} 位到访本站的小可爱哦~`
+    : null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
@@ -821,6 +884,9 @@ function WelcomeDialog({
           欢迎使用喵
         </div>
         <h2 className="mt-4 text-2xl font-semibold text-slate-950">欢迎使用喵</h2>
+        {visitorLine && (
+          <p className="mt-2 text-sm font-medium text-sky-600">{visitorLine}</p>
+        )}
         <p className="mt-3 text-sm leading-7 text-slate-600">
           此为开源项目，如果喜欢的话还请前往拓竹社区给作者助力喵~
         </p>
@@ -887,6 +953,20 @@ function MessageDialog({
       </div>
     </div>
   )
+}
+
+const VISITOR_COUNT_STORAGE_KEY = 'lineart-generator-visitor-count'
+
+function recordLocalVisit(): number {
+  try {
+    const raw = window.localStorage.getItem(VISITOR_COUNT_STORAGE_KEY)
+    const current = raw ? parseInt(raw, 10) : 0
+    const next = Number.isFinite(current) && current > 0 ? current + 1 : 1
+    window.localStorage.setItem(VISITOR_COUNT_STORAGE_KEY, String(next))
+    return next
+  } catch {
+    return 1
+  }
 }
 
 async function exportSingleFile(
