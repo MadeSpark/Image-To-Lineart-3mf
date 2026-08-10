@@ -1,6 +1,7 @@
-import { FileCode2, ImagePlus, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, FileCode2, ImagePlus, LayoutGrid, LoaderCircle, SlidersHorizontal, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { BatchSourceItem, ImportedLineart, LineartSettings, SourceImage, SourceKind } from '@/types/generator'
+import { AI_PROMPT_TEXT, autoCropFilmstrip, copyTextToClipboard, dataUrlToFile, downloadDataUrl, mergeImagesToFilmstrip } from '@/utils/filmstrip'
 
 interface UploadPanelProps {
   entries: BatchSourceItem[]
@@ -16,6 +17,7 @@ interface UploadPanelProps {
   onUpdateSettings: (patch: Partial<LineartSettings>) => void
   onSelectEntry: (entryId: string) => void
   onRemoveEntry: (entryId: string) => void
+  onClearEntries: () => void
 }
 
 export function UploadPanel({
@@ -32,6 +34,7 @@ export function UploadPanel({
   onUpdateSettings,
   onSelectEntry,
   onRemoveEntry,
+  onClearEntries,
 }: UploadPanelProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const dxfInputRef = useRef<HTMLInputElement | null>(null)
@@ -49,6 +52,66 @@ export function UploadPanel({
   const targetSwatchValue = /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(draftTargetColor)
     ? draftTargetColor
     : settings.targetColor
+
+  const filmstripInputRef = useRef<HTMLInputElement | null>(null)
+  const [aiAssistOpen, setAiAssistOpen] = useState(false)
+  const [aiAction, setAiAction] = useState<'idle' | 'merging' | 'importing'>('idle')
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied'>('idle')
+
+  const imageEntries = entries.filter((entry) => entry.sourceKind === 'image' && entry.sourceImage)
+
+  const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+
+  const handleMergeOutput = async () => {
+    if (!imageEntries.length || aiAction !== 'idle') return
+    setAiAction('merging')
+    try {
+      const dataUrls = imageEntries.map((entry) => entry.sourceImage!.dataUrl)
+      const sheets = await mergeImagesToFilmstrip(dataUrls)
+      sheets.forEach((dataUrl, index) => {
+        const name = sheets.length > 1 ? `filmstrip-${index + 1}.png` : 'filmstrip.png'
+        downloadDataUrl(dataUrl, name)
+      })
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '合并输出失败')
+    } finally {
+      setAiAction('idle')
+    }
+  }
+
+  const handleImportFilmstrip = async (file: File) => {
+    setAiAction('importing')
+    try {
+      const dataUrl = await readFileAsDataUrl(file)
+      const cropped = await autoCropFilmstrip(dataUrl)
+      if (!cropped.length) {
+        window.alert('未在图片中检测到内容，请确认是否为胶卷图')
+        return
+      }
+      const files = cropped.map((url, index) => dataUrlToFile(url, `filmstrip-cell-${String(index + 1).padStart(2, '0')}.png`))
+      onClearEntries()
+      onUploadImages(files)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '导入胶卷图失败')
+    } finally {
+      setAiAction('idle')
+    }
+  }
+
+  const handleCopyPrompt = async () => {
+    try {
+      await copyTextToClipboard(AI_PROMPT_TEXT)
+      setCopyStatus('copied')
+      setTimeout(() => setCopyStatus('idle'), 2000)
+    } catch {
+      window.alert('复制失败，请手动复制')
+    }
+  }
 
   return (
     <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_18px_60px_rgba(15,23,42,0.05)]">
@@ -198,6 +261,74 @@ export function UploadPanel({
           })}
         </div>
       </div>
+
+      <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-4">
+        <button
+          type="button"
+          onClick={() => setAiAssistOpen((current) => !current)}
+          className="flex w-full items-center justify-between text-left"
+        >
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+            <Sparkles className="h-4 w-4" />
+            AI 辅助识别
+          </div>
+          {aiAssistOpen
+            ? <ChevronDown className="h-4 w-4 text-slate-400" />
+            : <ChevronRight className="h-4 w-4 text-slate-400" />}
+        </button>
+
+        {aiAssistOpen && (
+          <div className="mt-3 grid gap-2">
+            <button
+              type="button"
+              onClick={() => void handleMergeOutput()}
+              disabled={!imageEntries.length || aiAction !== 'idle'}
+              className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {aiAction === 'merging'
+                ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                : <LayoutGrid className="h-4 w-4" />}
+              合并输出胶卷图
+            </button>
+            <button
+              type="button"
+              onClick={() => filmstripInputRef.current?.click()}
+              disabled={aiAction !== 'idle'}
+              className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {aiAction === 'importing'
+                ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                : <Upload className="h-4 w-4" />}
+              导入胶卷图（自动裁剪）
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCopyPrompt()}
+              className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950"
+            >
+              <Copy className="h-4 w-4" />
+              {copyStatus === 'copied' ? '已复制 AI 提示词' : '复制 AI 提示词'}
+            </button>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500">
+              合并输出：将素材列表中的图片按每行 5 张拼成胶卷图（最多 5×5），超出另存一张。把胶卷图交给 AI 处理后，用“导入胶卷图”自动裁剪回单张并导入。
+            </div>
+          </div>
+        )}
+      </div>
+
+      <input
+        ref={filmstripInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) {
+            void handleImportFilmstrip(file)
+          }
+          event.target.value = ''
+        }}
+      />
 
       <div className="rounded-[20px] bg-slate-50 p-4">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
