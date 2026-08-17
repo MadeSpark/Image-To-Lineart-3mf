@@ -583,54 +583,29 @@ export function buildSeal3mfPackage(
 
   const sealHeightMm = sealSettings.sealHeightMm
   const engravingDiffMm = sealSettings.engravingHeightDiffMm
-
-  let baseMesh: MeshData
-  let lineMesh: MeshData
-  let strokeMesh: MeshData | null = null
-
+  const bodyHeightMm = Math.max(0, sealHeightMm - engravingDiffMm)
   const flippedStrokeLoops = artwork.strokeLoops?.length
     ? flipLoopsForModelExport(artwork.strokeLoops!, artwork.boardHeightMm)
     : null
 
-  if (sealSettings.carvingMode === 'relief') {
-    baseMesh = translateMesh(
-      extrudeLoopsToMesh(
-        keepOuterLoops(flippedBaseLoops),
-        0,
-        sealHeightMm,
-      ),
-      offsetX,
-      offsetY,
-    )
-    lineMesh = translateMesh(
-      extrudeMaskToMesh(
-        flippedLineLoops,
-        artwork.boardWidthMm,
-        artwork.boardHeightMm,
-        lineMeshPixelsPerMm,
-        sealHeightMm,
-        engravingDiffMm,
-        MIN_EXPORTABLE_LINE_WIDTH_MM,
-      ),
-      offsetX,
-      offsetY,
-    )
-    if (flippedStrokeLoops?.length) {
-      strokeMesh = translateMesh(
-        extrudeMaskToMesh(
-          flippedStrokeLoops,
-          artwork.boardWidthMm,
-          artwork.boardHeightMm,
-          lineMeshPixelsPerMm,
-          sealHeightMm,
-          engravingDiffMm,
-          MIN_EXPORTABLE_LINE_WIDTH_MM,
-        ),
-        offsetX,
-        offsetY,
-      )
-    }
-  } else {
+  // Shared bottom layer: full baseplate extruded 0 -> bodyHeightMm
+  const bodyMesh = translateMesh(
+    extrudeLoopsToMesh(
+      keepOuterLoops(flippedBaseLoops),
+      0,
+      bodyHeightMm,
+    ),
+    offsetX,
+    offsetY,
+  )
+
+  const isIntaglio = sealSettings.carvingMode === 'intaglio'
+  const meshes: Array<{ mesh: MeshData; objectId: number; name: string; pindex: number }> = [
+    { mesh: bodyMesh, objectId: 2, name: '印章主体', pindex: 0 },
+  ]
+
+  if (isIntaglio) {
+    // 阴刻顶层: 底板形状减去线稿和描边，在 bodyHeight -> sealHeight 之间
     const baseMask = rasterizeLoopsToMask(
       keepOuterLoops(flippedBaseLoops),
       artwork.boardWidthMm,
@@ -645,7 +620,7 @@ export function buildSeal3mfPackage(
       lineMeshPixelsPerMm,
       0,
     )
-    let cutMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
+    let topMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
 
     if (flippedStrokeLoops?.length) {
       const strokeMask = rasterizeLoopsToMask(
@@ -655,55 +630,87 @@ export function buildSeal3mfPackage(
         lineMeshPixelsPerMm,
         0,
       )
-      cutMask = subtractMask(cutMask, strokeMask.mask, baseMask.width, baseMask.height)
+      topMask = subtractMask(topMask, strokeMask.mask, baseMask.width, baseMask.height)
     }
 
-    const cutLoops = traceMaskToLoops(cutMask, baseMask.width, baseMask.height)
+    const topLoops = traceMaskToLoops(topMask, baseMask.width, baseMask.height)
       .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
       .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
 
-    baseMesh = translateMesh(
-      extrudeLoopsToMesh(
-        keepOuterLoops(cutLoops),
-        0,
-        sealHeightMm,
-      ),
-      offsetX,
-      offsetY,
-    )
-    lineMesh = translateMesh(
+    if (topLoops.length) {
+      const topMesh = translateMesh(
+        extrudeMaskToMesh(
+          topLoops,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          lineMeshPixelsPerMm,
+          bodyHeightMm,
+          engravingDiffMm,
+          0,
+        ),
+        offsetX,
+        offsetY,
+      )
+      meshes.push({ mesh: topMesh, objectId: 3, name: '印章顶面', pindex: 0 })
+    }
+  } else {
+    // 阳刻顶层: 只有线稿和描边凸起，在 bodyHeight -> sealHeight 之间
+    const raisedLineMesh = translateMesh(
       extrudeMaskToMesh(
         flippedLineLoops,
         artwork.boardWidthMm,
         artwork.boardHeightMm,
         lineMeshPixelsPerMm,
-        Math.max(0, sealHeightMm - engravingDiffMm),
+        bodyHeightMm,
         engravingDiffMm,
         MIN_EXPORTABLE_LINE_WIDTH_MM,
       ),
       offsetX,
       offsetY,
     )
+    meshes.push({ mesh: raisedLineMesh, objectId: 3, name: '线稿', pindex: 0 })
+
     if (flippedStrokeLoops?.length) {
-      strokeMesh = translateMesh(
+      const strokeMesh = translateMesh(
         extrudeMaskToMesh(
           flippedStrokeLoops,
           artwork.boardWidthMm,
           artwork.boardHeightMm,
           lineMeshPixelsPerMm,
-          Math.max(0, sealHeightMm - engravingDiffMm),
+          bodyHeightMm,
           engravingDiffMm,
           MIN_EXPORTABLE_LINE_WIDTH_MM,
         ),
         offsetX,
         offsetY,
       )
+      meshes.push({ mesh: strokeMesh, objectId: 5, name: '描边', pindex: 0 })
     }
   }
 
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
-  const modelXml = buildSeal3mfModelXml(baseMesh, lineMesh, strokeMesh, baseplateSettings, applicationName, sealSettings)
+  const modelXml = buildSeal3mfModelXml(meshes, 4, baseplateSettings, applicationName, sealSettings)
 
+  const parts = meshes.map((m) => ({ id: m.objectId, name: m.name, extruder: 1 }))
+
+  return buildSeal3mfZipPackage(
+    modelXml,
+    parts,
+    4,
+    baseplateSettings,
+    printBedSettings,
+    threeMfProfile,
+  )
+}
+
+function buildSeal3mfZipPackage(
+  modelXml: string,
+  parts: Array<{ id: number; name: string; extruder: number }>,
+  compositeObjectId: number,
+  baseplateSettings: BaseplateSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
+) {
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -718,22 +725,15 @@ export function buildSeal3mfPackage(
     '</Relationships>',
   ].join('\n')
 
-  const parts: Array<{ id: number; name: string; extruder: number }> = [
-    { id: 2, name: '印章', extruder: 1 },
-    { id: 3, name: '线稿', extruder: 2 },
-  ]
-  if (strokeMesh) {
-    parts.push({ id: 5, name: '描边', extruder: 1 })
-  }
   const modelSettings = buildBambuModelSettingsConfig([
     {
-      id: 4,
-      name: sealSettings.carvingMode === 'intaglio' ? '阴刻印章' : '阳刻印章',
+      id: compositeObjectId,
+      name: parts.length > 1 ? '阳刻印章' : '阴刻印章',
       parts,
     },
   ], [{
     plateIndex: 0,
-    objectIds: [4],
+    objectIds: [compositeObjectId],
     identifyIds: [1],
   }])
   const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
@@ -752,30 +752,20 @@ export function buildSeal3mfPackage(
 }
 
 function buildSeal3mfModelXml(
-  baseMesh: MeshData,
-  lineMesh: MeshData,
-  strokeMesh: MeshData | null,
+  meshes: Array<{ mesh: MeshData; objectId: number; name: string; pindex: number }>,
+  compositeObjectId: number,
   baseplateSettings: BaseplateSettings,
   applicationName: string,
   sealSettings: SealSettings,
 ) {
   const baseColor = `${baseplateSettings.baseColor.toUpperCase()}FF`
-  const lineColor = `${baseplateSettings.lineColor.toUpperCase()}FF`
-  const baseObjectId = 2
-  const lineObjectId = 3
-  const compositeObjectId = 4
-  const strokeObjectId = 5
-
-  const basematerialId = 1
 
   const objects: string[] = []
-  objects.push(meshTo3mfObject(baseMesh, baseObjectId, '印章底板', 0))
-  objects.push(meshTo3mfObject(lineMesh, lineObjectId, sealSettings.carvingMode === 'intaglio' ? '阴刻线稿' : '阳刻线稿', 1))
+  const componentIds: number[] = []
 
-  const componentIds = [baseObjectId, lineObjectId]
-  if (strokeMesh) {
-    objects.push(meshTo3mfObject(strokeMesh, strokeObjectId, '印章描边', 0))
-    componentIds.push(strokeObjectId)
+  for (const entry of meshes) {
+    objects.push(meshTo3mfObject(entry.mesh, entry.objectId, entry.name, entry.pindex))
+    componentIds.push(entry.objectId)
   }
 
   objects.push(build3mfCompositeObject(compositeObjectId, sealSettings.carvingMode === 'intaglio' ? '阴刻印章' : '阳刻印章', componentIds))
@@ -787,10 +777,9 @@ function buildSeal3mfModelXml(
     '  <metadata name="Designer">线稿底板生成器</metadata>',
     `  <metadata name="Title">${escapeXmlAttribute(sealSettings.carvingMode === 'intaglio' ? '阴刻印章 3MF' : '阳刻印章 3MF')}</metadata>`,
     '  <resources>',
-    `    <basematerials id="${basematerialId}">`,
-    `      <base name="印章底板" displaycolor="${baseColor}"/>`,
-    `      <base name="印章线稿" displaycolor="${lineColor}"/>`,
-    `    </basematerials>`,
+    '    <basematerials id="1">',
+    `      <base name="印章耗材" displaycolor="${baseColor}"/>`,
+    '    </basematerials>',
     ...objects,
     '  </resources>',
     '  <build>',
@@ -808,41 +797,47 @@ export function buildSealPreviewModelGltfBlob(
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   const sealHeightMm = sealSettings.sealHeightMm
   const engravingDiffMm = sealSettings.engravingHeightDiffMm
+  const bodyHeightMm = Math.max(0, sealHeightMm - engravingDiffMm)
+  const baseColor = baseplateSettings.baseColor
 
   const meshes: Array<{ mesh: MeshData; name: string; color: string }> = []
-
   const strokeLoops = artwork.strokeLoops?.length ? artwork.strokeLoops : null
 
+  // Shared bottom layer
+  const bodyMesh = extrudeLoopsToMesh(
+    keepOuterLoops(artwork.baseLoops),
+    0,
+    bodyHeightMm,
+  )
+  meshes.push({ mesh: bodyMesh, name: '印章主体', color: baseColor })
+
   if (sealSettings.carvingMode === 'relief') {
-    const baseMesh = extrudeLoopsToMesh(
-      keepOuterLoops(artwork.baseLoops),
-      0,
-      sealHeightMm,
-    )
+    // 阳刻顶层: 线稿凸起
     const lineMesh = extrudeMaskToMesh(
       artwork.lineLoops,
       artwork.boardWidthMm,
       artwork.boardHeightMm,
       lineMeshPixelsPerMm,
-      sealHeightMm,
+      bodyHeightMm,
       engravingDiffMm,
       MIN_EXPORTABLE_LINE_WIDTH_MM,
     )
-    meshes.push({ mesh: baseMesh, name: '印章', color: baseplateSettings.baseColor })
-    meshes.push({ mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor })
+    meshes.push({ mesh: lineMesh, name: '线稿', color: baseColor })
+
     if (strokeLoops?.length) {
       const strokeMesh = extrudeMaskToMesh(
         strokeLoops,
         artwork.boardWidthMm,
         artwork.boardHeightMm,
         lineMeshPixelsPerMm,
-        sealHeightMm,
+        bodyHeightMm,
         engravingDiffMm,
         MIN_EXPORTABLE_LINE_WIDTH_MM,
       )
-      meshes.push({ mesh: strokeMesh, name: '描边', color: baseplateSettings.lineColor })
+      meshes.push({ mesh: strokeMesh, name: '描边', color: baseColor })
     }
   } else {
+    // 阴刻顶层: 底板形状减去线稿和描边
     const baseMask = rasterizeLoopsToMask(
       keepOuterLoops(artwork.baseLoops),
       artwork.boardWidthMm,
@@ -857,7 +852,7 @@ export function buildSealPreviewModelGltfBlob(
       lineMeshPixelsPerMm,
       0,
     )
-    let cutMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
+    let topMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
 
     if (strokeLoops?.length) {
       const strokeMask = rasterizeLoopsToMask(
@@ -867,40 +862,24 @@ export function buildSealPreviewModelGltfBlob(
         lineMeshPixelsPerMm,
         0,
       )
-      cutMask = subtractMask(cutMask, strokeMask.mask, baseMask.width, baseMask.height)
+      topMask = subtractMask(topMask, strokeMask.mask, baseMask.width, baseMask.height)
     }
 
-    const cutLoops = traceMaskToLoops(cutMask, baseMask.width, baseMask.height)
+    const topLoops = traceMaskToLoops(topMask, baseMask.width, baseMask.height)
       .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
       .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
 
-    const baseMesh = extrudeLoopsToMesh(
-      keepOuterLoops(cutLoops),
-      0,
-      sealHeightMm,
-    )
-    const lineMesh = extrudeMaskToMesh(
-      artwork.lineLoops,
-      artwork.boardWidthMm,
-      artwork.boardHeightMm,
-      lineMeshPixelsPerMm,
-      Math.max(0, sealHeightMm - engravingDiffMm),
-      engravingDiffMm,
-      MIN_EXPORTABLE_LINE_WIDTH_MM,
-    )
-    meshes.push({ mesh: baseMesh, name: '印章', color: baseplateSettings.baseColor })
-    meshes.push({ mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor })
-    if (strokeLoops?.length) {
-      const strokeMesh = extrudeMaskToMesh(
-        strokeLoops,
+    if (topLoops.length) {
+      const topMesh = extrudeMaskToMesh(
+        topLoops,
         artwork.boardWidthMm,
         artwork.boardHeightMm,
         lineMeshPixelsPerMm,
-        Math.max(0, sealHeightMm - engravingDiffMm),
+        bodyHeightMm,
         engravingDiffMm,
-        MIN_EXPORTABLE_LINE_WIDTH_MM,
+        0,
       )
-      meshes.push({ mesh: strokeMesh, name: '描边', color: baseplateSettings.lineColor })
+      meshes.push({ mesh: topMesh, name: '印章顶面', color: baseColor })
     }
   }
 

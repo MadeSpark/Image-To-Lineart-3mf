@@ -48,6 +48,19 @@ export const defaultBaseplateSettings: BaseplateSettings = {
   baseColor: '#f3f6fb',
 }
 
+export const defaultSealBaseplateSettings: BaseplateSettings = {
+  template: 'rectangle',
+  expandMm: 2,
+  widthMm: 30,
+  heightMm: 30,
+  rectangleSizeMode: 'manual',
+  rectangleScalePercent: 100,
+  diameterMm: 30,
+  marginMm: 4,
+  lineColor: '#111111',
+  baseColor: '#f3f6fb',
+}
+
 export const defaultExtrudeSettings: ExtrudeSettings = {
   baseThicknessMm: 0.2,
   lineThicknessMm: 0.2,
@@ -74,7 +87,7 @@ export const defaultSealSettings: SealSettings = {
   strokeWidthMm: 1,
   carvingMode: 'relief',
   sealHeightMm: 30,
-  engravingHeightDiffMm: 1,
+  engravingHeightDiffMm: 0.5,
 }
 
 interface FiligreeModeSettings {
@@ -165,7 +178,7 @@ function normalizeFiligreeSettings(parsed: Partial<FiligreeModeSettings>): Filig
 function normalizeSealSettings(parsed: Partial<SealModeSettings>): SealModeSettings {
   return {
     lineartSettings: { ...defaultSealLineartSettings, ...parsed.lineartSettings },
-    baseplateSettings: { ...defaultBaseplateSettings, ...parsed.baseplateSettings },
+    baseplateSettings: { ...defaultSealBaseplateSettings, ...parsed.baseplateSettings },
     sealSettings: { ...defaultSealSettings, ...parsed.sealSettings },
   }
 }
@@ -464,14 +477,14 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     } else {
       saveSealSettings({
         lineartSettings: defaultSealLineartSettings,
-        baseplateSettings: defaultBaseplateSettings,
+        baseplateSettings: defaultSealBaseplateSettings,
         sealSettings: defaultSealSettings,
       })
       set({
         workMode: 'seal',
         previewMode: DEFAULT_PREVIEW_MODE,
         lineartSettings: defaultSealLineartSettings,
-        baseplateSettings: defaultBaseplateSettings,
+        baseplateSettings: defaultSealBaseplateSettings,
         sealSettings: defaultSealSettings,
         printBedSettings,
         customThreeMfProfile: null,
