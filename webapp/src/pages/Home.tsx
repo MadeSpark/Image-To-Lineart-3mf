@@ -91,6 +91,12 @@ export default function Home() {
   const [placementPreviewItems, setPlacementPreviewItems] = useState<ProcessedBatchItem[]>([])
   const [placementPreviewProcessing, setPlacementPreviewProcessing] = useState(false)
   const [placementPreviewError, setPlacementPreviewError] = useState<string | null>(null)
+  const [fullPreviewOpen, setFullPreviewOpen] = useState(false)
+  const [fullPreviewItems, setFullPreviewItems] = useState<ProcessedBatchItem[]>([])
+  const [fullPreviewProcessing, setFullPreviewProcessing] = useState(false)
+  const [fullPreviewProgress, setFullPreviewProgress] = useState({ current: 0, total: 0 })
+  const [exportProgressOpen, setExportProgressOpen] = useState(false)
+  const [exportProgress, setExportProgress] = useState({ current: 0, total: 0, label: '' })
   const [defaultThreeMfProfile, setDefaultThreeMfProfile] = useState(() => createFallbackThreeMfTemplateProfile())
   const [templateProfileLoading, setTemplateProfileLoading] = useState(true)
   const [welcomeDialogOpen, setWelcomeDialogOpen] = useState(true)
@@ -282,8 +288,8 @@ export default function Home() {
       }
     }
 
-    if (entries.length === 1 && activeEntry && effectiveArtwork) {
-      setPlacementPreviewItems([{ entry: activeEntry, artwork: effectiveArtwork }])
+    if (!activeEntry || !effectiveArtwork) {
+      setPlacementPreviewItems([])
       setPlacementPreviewProcessing(false)
       setPlacementPreviewError(null)
       return () => {
@@ -291,29 +297,14 @@ export default function Home() {
       }
     }
 
-    setPlacementPreviewProcessing(true)
+    setPlacementPreviewItems([{ entry: activeEntry, artwork: effectiveArtwork }])
+    setPlacementPreviewProcessing(false)
     setPlacementPreviewError(null)
-
-    void buildProcessedItems(entries)
-      .then((processedItems) => {
-        if (cancelled) return
-        setPlacementPreviewItems(processedItems)
-      })
-      .catch((caughtError) => {
-        if (cancelled) return
-        setPlacementPreviewItems([])
-        setPlacementPreviewError(normalizeErrorMessage(caughtError, '摆盘预览生成失败'))
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setPlacementPreviewProcessing(false)
-        }
-      })
 
     return () => {
       cancelled = true
     }
-  }, [activeEntry, artwork, baseplateSettings, effectiveArtwork, entries, extrudeSettings, lineartOverrides, lineartSettings, numberingSettings])
+  }, [activeEntry, effectiveArtwork, entries.length])
 
   useEffect(() => {
     if (!qaqModeEnabled) return
@@ -442,21 +433,26 @@ export default function Home() {
     }
   }
 
-  async function buildProcessedItems(targets: BatchSourceItem[]) {
+  async function buildProcessedItems(
+    targets: BatchSourceItem[],
+    onProgress?: (current: number, total: number) => void,
+  ) {
     const results: ProcessedBatchItem[] = []
 
     for (const [index, entry] of targets.entries()) {
+      onProgress?.(index, targets.length)
+
       const processedArtwork = entry.id === activeEntry?.id && artwork
         ? artwork
         : await processArtwork({
-          sourceImage: entry.sourceImage,
-          importedLineart: entry.importedLineart,
-          lineartSettings,
-          baseplateSettings,
-          extrudeSettings,
-          sealSettings: workMode === 'seal' ? sealSettings : undefined,
-          workMode,
-        })
+            sourceImage: entry.sourceImage,
+            importedLineart: entry.importedLineart,
+            lineartSettings,
+            baseplateSettings,
+            extrudeSettings,
+            sealSettings: workMode === 'seal' ? sealSettings : undefined,
+            workMode,
+          })
 
       const lineartOverride = lineartOverrides[entry.id]
       let finalArtwork = lineartOverride
@@ -475,6 +471,7 @@ export default function Home() {
       results.push({ entry, artwork: finalArtwork })
     }
 
+    onProgress?.(targets.length, targets.length)
     return results
   }
 
@@ -482,9 +479,15 @@ export default function Home() {
     if (!entries.length) return
     setBatch3mfDialogOpen(false)
     setExporting(true)
+    setExportProgressOpen(true)
+    setExportProgress({ current: 0, total: entries.length, label: '准备处理...' })
 
     try {
-      const processedItems = await buildProcessedItems(entries)
+      const processedItems = await buildProcessedItems(entries, (current, total) => {
+        setExportProgress({ current, total, label: `正在处理第 ${current + 1} / ${total} 张图片` })
+      })
+
+      setExportProgress({ current: entries.length, total: entries.length, label: '正在生成 3MF 文件...' })
 
       if (mode === 'single') {
         const bytes = buildCombined3mfPackage(
@@ -533,6 +536,7 @@ export default function Home() {
       window.alert(normalizeErrorMessage(caughtError, '批量导出 3MF 失败'))
     } finally {
       setExporting(false)
+      setTimeout(() => setExportProgressOpen(false), 500)
     }
   }
 
@@ -610,6 +614,23 @@ export default function Home() {
       )
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleFullPreview = async () => {
+    if (!entries.length) return
+    setFullPreviewOpen(true)
+    setFullPreviewProcessing(true)
+    setFullPreviewProgress({ current: 0, total: entries.length })
+    try {
+      const items = await buildProcessedItems(entries, (current, total) => {
+        setFullPreviewProgress({ current, total })
+      })
+      setFullPreviewItems(items)
+    } catch (caughtError) {
+      window.alert(normalizeErrorMessage(caughtError, '完整预览生成失败'))
+    } finally {
+      setFullPreviewProcessing(false)
     }
   }
 
@@ -856,6 +877,8 @@ export default function Home() {
               profileLoading={templateProfileLoading && !customThreeMfProfile}
               onUpdateSettings={updatePrintBedSettings}
               onImport3mfProfile={(file) => void handleImport3mfProfile(file)}
+              onFullPreview={entries.length > 1 ? handleFullPreview : undefined}
+              fullPreviewProgress={fullPreviewProgress}
             />
             <ExportPanel
               stats={effectiveArtwork?.stats ?? null}
@@ -885,6 +908,24 @@ export default function Home() {
           count={entries.length}
           onCancel={() => setBatch3mfDialogOpen(false)}
           onChooseMode={(mode) => void exportBatch3mf(mode)}
+        />
+      )}
+
+      {exportProgressOpen && (
+        <ProgressDialog
+          title="正在导出 3MF"
+          label={exportProgress.label}
+          current={exportProgress.current}
+          total={exportProgress.total}
+        />
+      )}
+
+      {fullPreviewOpen && (
+        <FullPreviewDialog
+          items={fullPreviewItems}
+          processing={fullPreviewProcessing}
+          progress={fullPreviewProgress}
+          onClose={() => setFullPreviewOpen(false)}
         />
       )}
 
@@ -960,6 +1001,107 @@ function WelcomeDialog({
             残忍拒绝
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function ProgressDialog({
+  title,
+  label,
+  current,
+  total,
+}: {
+  title: string
+  label: string
+  current: number
+  total: number
+}) {
+  const percent = total > 0 ? Math.round((current / total) * 100) : 0
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
+        <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
+        <p className="mt-2 text-sm text-slate-600">{label}</p>
+        <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+          <div
+            className="h-full rounded-full bg-[#0088ff] transition-all duration-200"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <p className="mt-2 text-right text-xs text-slate-500">{current} / {total}</p>
+      </div>
+    </div>
+  )
+}
+
+function FullPreviewDialog({
+  items,
+  processing,
+  progress,
+  onClose,
+}: {
+  items: ProcessedBatchItem[]
+  processing: boolean
+  progress: { current: number; total: number }
+  onClose: () => void
+}) {
+  const percent = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
+      <div className="max-h-[85vh] w-full max-w-5xl rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-slate-950">完整预览</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+          >
+            关闭
+          </button>
+        </div>
+
+        {processing && (
+          <div className="px-6 py-8">
+            <p className="text-sm text-slate-600">
+              正在处理第 {progress.current + 1} / {progress.total} 张图片...
+            </p>
+            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-[#0088ff] transition-all duration-200"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {!processing && (
+          <div className="max-h-[65vh] overflow-auto p-6">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+              {items.map((item, index) => (
+                <div
+                  key={item.entry.id}
+                  className="overflow-hidden rounded-[18px] border border-slate-200 bg-white"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+                    <span className="text-xs font-medium text-slate-700">
+                      {index + 1}. {item.entry.label}
+                    </span>
+                  </div>
+                  <div className="relative" style={{ aspectRatio: `${item.artwork.boardWidthMm} / ${item.artwork.boardHeightMm}` }}>
+                    {item.artwork.previews.compositeDataUrl && (
+                      <img
+                        src={item.artwork.previews.compositeDataUrl}
+                        alt={item.entry.label}
+                        className="h-full w-full object-contain bg-slate-50"
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

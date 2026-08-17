@@ -24,6 +24,8 @@ interface PrintBedPanelProps {
   profileLoading: boolean
   onUpdateSettings: (patch: Partial<PrintBedSettings>) => void
   onImport3mfProfile: (file: File) => void
+  onFullPreview?: () => void
+  fullPreviewProgress?: { current: number; total: number }
 }
 
 export function PrintBedPanel({
@@ -40,6 +42,8 @@ export function PrintBedPanel({
   profileLoading,
   onUpdateSettings,
   onImport3mfProfile,
+  onFullPreview,
+  fullPreviewProgress,
 }: PrintBedPanelProps) {
   const profileInputRef = useRef<HTMLInputElement | null>(null)
   const layout = useMemo(() => planPrintBedLayout(
@@ -170,8 +174,20 @@ export function PrintBedPanel({
       <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-slate-50">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="text-xs font-medium text-slate-700">单 3MF 摆盘预览</div>
-          <div className="text-[11px] text-slate-500">
-            {batchCount > 1 ? '塞不下时会自动拆到下一块打印板' : '单图模式下会按打印盘中心摆放'}
+          <div className="flex items-center gap-2">
+            {onFullPreview && (
+              <button
+                type="button"
+                onClick={onFullPreview}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-[#0088ff] px-3 py-1.5 text-xs font-medium text-white transition hover:bg-[#0077e0]"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                完整预览
+              </button>
+            )}
+            <div className="text-[11px] text-slate-500">
+              {batchCount > 1 ? '预览模式仅处理当前图片' : '单图模式下会按打印盘中心摆放'}
+            </div>
           </div>
         </div>
 
@@ -220,19 +236,12 @@ export function PrintBedPanel({
                         const item = items.find((entry) => entry.id === placement.id)
                         const stroke = !placement.fits ? '#e11d48' : item?.isActive ? '#0088ff' : '#64748b'
                         const fill = !placement.fits ? '#ffe4e6' : '#ffffff'
+                        const labelText = items.length > 1
+                          ? String(items.findIndex((entry) => entry.id === placement.id) + 1)
+                          : ''
 
                         return (
                           <g key={`${plate.plateIndex}-${placement.id}`}>
-                            <clipPath id={`clip-${plate.plateIndex}-${placement.id}`}>
-                              <rect
-                                x={placement.xMm}
-                                y={placement.yMm}
-                                width={placement.widthMm}
-                                height={placement.heightMm}
-                                rx="2"
-                                ry="2"
-                              />
-                            </clipPath>
                             <rect
                               x={placement.xMm}
                               y={placement.yMm}
@@ -244,38 +253,18 @@ export function PrintBedPanel({
                               stroke={stroke}
                               strokeWidth={item?.isActive ? 2 : 1.2}
                             />
-                            {placement.previewDataUrl && (
-                              <image
-                                href={placement.previewDataUrl}
-                                x={placement.xMm}
-                                y={placement.yMm}
-                                width={placement.widthMm}
-                                height={placement.heightMm}
-                                preserveAspectRatio="none"
-                                clipPath={`url(#clip-${plate.plateIndex}-${placement.id})`}
-                                opacity={placement.fits ? 0.96 : 0.55}
-                              />
+                            {labelText && (
+                              <text
+                                x={placement.xMm + placement.widthMm / 2}
+                                y={placement.yMm + placement.heightMm / 2 + 3}
+                                fontSize="8"
+                                fill={stroke}
+                                fontWeight="700"
+                                textAnchor="middle"
+                              >
+                                {labelText}
+                              </text>
                             )}
-                            <rect
-                              x={placement.xMm}
-                              y={placement.yMm}
-                              width={placement.widthMm}
-                              height={placement.heightMm}
-                              rx="2"
-                              ry="2"
-                              fill="none"
-                              stroke={stroke}
-                              strokeWidth={item?.isActive ? 2 : 1.2}
-                            />
-                            <text
-                              x={placement.xMm + 3}
-                              y={placement.yMm + 7}
-                              fontSize="6"
-                              fill={stroke}
-                              fontWeight="600"
-                            >
-                              {placement.label}
-                            </text>
                           </g>
                         )
                       })}
