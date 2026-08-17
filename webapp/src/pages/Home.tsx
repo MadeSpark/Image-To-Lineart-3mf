@@ -8,6 +8,7 @@ import { NumberingPanel } from '@/components/NumberingPanel'
 import { PalettePanel } from '@/components/PalettePanel'
 import { PreviewCanvas } from '@/components/PreviewCanvas'
 import { PrintBedPanel } from '@/components/PrintBedPanel'
+import { SealPanel } from '@/components/SealPanel'
 import { ThicknessPanel } from '@/components/ThicknessPanel'
 import { UploadPanel } from '@/components/UploadPanel'
 import { WorkbenchHeader } from '@/components/WorkbenchHeader'
@@ -17,13 +18,14 @@ import {
   useGeneratorStore,
 } from '@/stores/generatorStore'
 import type { GeneratorSettingsPatch, GeneratorSettingsPayload } from '@/stores/generatorStore'
-import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, VectorLoop, VectorPoint } from '@/types/generator'
+import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, SealSettings as SealSettingsType, VectorLoop, VectorPoint, WorkMode } from '@/types/generator'
 import {
   applyLineartStrokeEdit,
   applyNumberingToArtwork,
   build3mfPackage,
   buildCombined3mfPackage,
   buildLineartSvgDocument,
+  buildSeal3mfPackage,
   rebuildArtworkWithLineLoops,
   buildLoopDxf,
   decodeGifFrames,
@@ -63,6 +65,8 @@ export default function Home() {
     extrudeSettings,
     printBedSettings,
     numberingSettings,
+    sealSettings,
+    workMode,
     customThreeMfProfile,
     setSourceImage,
     setImportedLineart,
@@ -72,7 +76,9 @@ export default function Home() {
     updateExtrudeSettings,
     updatePrintBedSettings,
     updateNumberingSettings,
+    updateSealSettings,
     setCustomThreeMfProfile,
+    setWorkMode,
     applyImportedSettings,
     resetAllSettings,
   } = useGeneratorStore()
@@ -231,6 +237,8 @@ export default function Home() {
     lineartSettings,
     baseplateSettings,
     extrudeSettings,
+    workMode === 'seal' ? sealSettings : undefined,
+    workMode,
   )
   const activeLineartOverride = activeEntryId ? lineartOverrides[activeEntryId] : undefined
   const baseArtwork = useMemo(
@@ -240,7 +248,7 @@ export default function Home() {
     [activeLineartOverride, artwork, baseplateSettings],
   )
   const effectiveArtwork = useMemo(() => {
-    if (!baseArtwork || !numberingSettings.enabled) return baseArtwork
+    if (!baseArtwork || !numberingSettings.enabled || workMode === 'seal') return baseArtwork
     const activeIndex = entries.findIndex((entry) => entry.id === activeEntryId)
     if (activeIndex < 0) return baseArtwork
     return applyNumberingToArtwork(
@@ -249,7 +257,7 @@ export default function Home() {
       numberingSettings,
       numberingSettings.startNumber + activeIndex,
     )
-  }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings])
+  }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings, workMode])
 
   useEffect(() => {
     setLineartOverrides((current) => {
@@ -446,6 +454,8 @@ export default function Home() {
           lineartSettings,
           baseplateSettings,
           extrudeSettings,
+          sealSettings: workMode === 'seal' ? sealSettings : undefined,
+          workMode,
         })
 
       const lineartOverride = lineartOverrides[entry.id]
@@ -453,7 +463,7 @@ export default function Home() {
         ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings)
         : processedArtwork
 
-      if (numberingSettings.enabled) {
+      if (numberingSettings.enabled && workMode === 'filigree') {
         finalArtwork = applyNumberingToArtwork(
           finalArtwork,
           baseplateSettings,
@@ -484,7 +494,11 @@ export default function Home() {
             artwork: item.artwork,
           })),
           baseplateSettings,
-          extrudeSettings,
+          workMode === 'seal' ? {
+            baseThicknessMm: sealSettings.sealHeightMm,
+            lineHeightMm: sealSettings.engravingHeightDiffMm,
+            lineThicknessMm: 0.4,
+          } : extrudeSettings,
           printBedSettings,
           effectiveThreeMfProfile,
         )
@@ -495,13 +509,21 @@ export default function Home() {
       const archiveEntries: Record<string, Uint8Array> = {}
       processedItems.forEach((item, index) => {
         const filename = `${buildNumberedBaseName(item.entry, index)}.3mf`
-        archiveEntries[filename] = build3mfPackage(
-          item.artwork,
-          baseplateSettings,
-          extrudeSettings,
-          printBedSettings,
-          effectiveThreeMfProfile,
-        )
+        archiveEntries[filename] = workMode === 'seal'
+          ? buildSeal3mfPackage(
+              item.artwork,
+              baseplateSettings,
+              sealSettings,
+              printBedSettings,
+              effectiveThreeMfProfile,
+            )
+          : build3mfPackage(
+              item.artwork,
+              baseplateSettings,
+              extrudeSettings,
+              printBedSettings,
+              effectiveThreeMfProfile,
+            )
       })
       triggerBlobDownload(
         'lineart-baseplate-3mf-batch.zip',
@@ -567,15 +589,24 @@ export default function Home() {
 
     setExporting(true)
     try {
+      const bytes = workMode === 'seal'
+        ? buildSeal3mfPackage(
+            effectiveArtwork,
+            baseplateSettings,
+            sealSettings,
+            printBedSettings,
+            effectiveThreeMfProfile,
+          )
+        : build3mfPackage(
+            effectiveArtwork,
+            baseplateSettings,
+            extrudeSettings,
+            printBedSettings,
+            effectiveThreeMfProfile,
+          )
       triggerBlobDownload(
         `${exportBaseName}.3mf`,
-        new Blob([build3mfPackage(
-          effectiveArtwork,
-          baseplateSettings,
-          extrudeSettings,
-          printBedSettings,
-          effectiveThreeMfProfile,
-        )], { type: 'model/3mf' }),
+        new Blob([bytes], { type: 'model/3mf' }),
       )
     } finally {
       setExporting(false)
@@ -707,8 +738,10 @@ export default function Home() {
       <div className="mx-auto max-w-[1680px] space-y-6">
         <WorkbenchHeader
           appVersion={__APP_VERSION__}
+          workMode={workMode}
           previewMode={previewMode}
           template={baseplateSettings.template}
+          onWorkModeChange={setWorkMode}
           onPreviewModeChange={setPreviewMode}
           onTemplateChange={(template) => updateBaseplateSettings({ template })}
           onExportSettings={handleExportSettings}
@@ -731,6 +764,7 @@ export default function Home() {
               settings={lineartSettings}
               despeckleLocked={despeckleLocked}
               processing={processing || exporting}
+              workMode={workMode}
               onUpdateSettings={updateLineartSettings}
               onUploadImages={(files) => void handleUploadImages(files)}
               onImportDxf={(file) => void handleImportDxf(file)}
@@ -768,6 +802,8 @@ export default function Home() {
               targetColor={lineartSettings.targetColor}
               baseplateSettings={baseplateSettings}
               extrudeSettings={extrudeSettings}
+              sealSettings={sealSettings}
+              workMode={workMode}
               hasLineartEdits={despeckleLocked}
               viewResetKey={activeEntry?.id ?? 'empty'}
               onApplyLineartStroke={handleApplyLineartStroke}
@@ -783,15 +819,24 @@ export default function Home() {
               printBedSettings={printBedSettings}
               onUpdateSettings={updateBaseplateSettings}
             />
-            <ThicknessPanel
-              settings={extrudeSettings}
-              onUpdateSettings={updateExtrudeSettings}
-            />
-            <NumberingPanel
-              settings={numberingSettings}
-              batchCount={entries.length}
-              onUpdateSettings={updateNumberingSettings}
-            />
+            {workMode === 'seal' ? (
+              <SealPanel
+                settings={sealSettings}
+                onUpdateSettings={updateSealSettings}
+              />
+            ) : (
+              <ThicknessPanel
+                settings={extrudeSettings}
+                onUpdateSettings={updateExtrudeSettings}
+              />
+            )}
+            {workMode === 'filigree' && (
+              <NumberingPanel
+                settings={numberingSettings}
+                batchCount={entries.length}
+                onUpdateSettings={updateNumberingSettings}
+              />
+            )}
             <PrintBedPanel
               settings={printBedSettings}
               items={placementPreviewItems.map((item) => ({

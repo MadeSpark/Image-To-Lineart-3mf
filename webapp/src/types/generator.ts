@@ -2,6 +2,8 @@ export type PreviewMode = '原图' | '线稿' | '底板预览' | '分层预览' 
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
 export type RectangleSizeMode = 'ratio' | 'manual'
 export type SourceKind = 'image' | 'dxf'
+export type WorkMode = 'filigree' | 'seal'
+export type CarvingMode = 'intaglio' | 'relief'
 
 export interface SourceImage {
   name: string
@@ -87,6 +89,14 @@ export interface NumberingSettings {
   verticalAlign: 'top' | 'center' | 'bottom'
 }
 
+export interface SealSettings {
+  strokeEnabled: boolean
+  strokeWidthMm: number
+  carvingMode: CarvingMode
+  sealHeightMm: number
+  engravingHeightDiffMm: number
+}
+
 export interface ThreeMfTemplateProfile {
   sourceName: string
   applicationName: string
@@ -128,6 +138,7 @@ export interface ProcessedArtwork {
   sourceHeight: number
   lineLoops: VectorLoop[]
   baseLoops: VectorLoop[]
+  strokeLoops?: VectorLoop[]
   boardWidthMm: number
   boardHeightMm: number
   pixelsPerMm: number

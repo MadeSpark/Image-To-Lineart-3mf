@@ -5,7 +5,9 @@ import type {
   ImportedLineart,
   LineartSettings,
   ProcessedArtwork,
+  SealSettings,
   SourceImage,
+  WorkMode,
 } from '@/types/generator'
 import { processArtwork } from '@/utils/generator'
 
@@ -21,6 +23,8 @@ export function useArtworkProcessor(
   lineartSettings: LineartSettings,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  sealSettings?: SealSettings,
+  workMode?: WorkMode,
 ) {
   const [state, setState] = useState<ProcessorState>({
     artwork: null,
@@ -33,6 +37,8 @@ export function useArtworkProcessor(
     lineartSettings,
     baseplateSettings,
     extrudeSettings,
+    sealSettings,
+    workMode,
   })
 
   useEffect(() => {
@@ -42,8 +48,10 @@ export function useArtworkProcessor(
       lineartSettings,
       baseplateSettings,
       extrudeSettings,
+      sealSettings,
+      workMode,
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sealSettings, workMode])
 
   useEffect(() => {
     let mounted = true
@@ -86,7 +94,7 @@ export function useArtworkProcessor(
     return () => {
       mounted = false
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sealSettings, workMode])
 
   return {
     artwork: state.artwork,

@@ -7,9 +7,11 @@ import type {
   ExtrudeSettings,
   PreviewMode,
   ProcessedArtwork,
+  SealSettings,
   SourceImage,
   VectorLoop,
   VectorPoint,
+  WorkMode,
 } from '@/types/generator'
 import { clamp } from '@/utils/color'
 
@@ -22,6 +24,8 @@ interface PreviewCanvasProps {
   targetColor: string
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
+  sealSettings?: SealSettings
+  workMode?: WorkMode
   hasLineartEdits: boolean
   viewResetKey: string
   onApplyLineartStroke: (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => void
@@ -46,6 +50,8 @@ export function PreviewCanvas({
   targetColor,
   baseplateSettings,
   extrudeSettings,
+  sealSettings,
+  workMode,
   hasLineartEdits,
   viewResetKey,
   onApplyLineartStroke,
@@ -502,6 +508,8 @@ export function PreviewCanvas({
                 artwork={artwork}
                 baseplateSettings={baseplateSettings}
                 extrudeSettings={extrudeSettings}
+                sealSettings={sealSettings}
+                workMode={workMode}
               />
             )}
 
@@ -736,6 +744,13 @@ function buildVectorPreviewScene(
       fill: baseplateSettings.lineColor,
       path: loopsToSvgPath(artwork.lineLoops),
     })
+    if (artwork.strokeLoops?.length) {
+      layers.push({
+        id: 'stroke',
+        fill: baseplateSettings.lineColor,
+        path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
   } else if (previewMode === '底板预览' && artwork) {
     layers.push({
       id: 'baseplate',
@@ -748,6 +763,14 @@ function buildVectorPreviewScene(
       opacity: 0.22,
       path: loopsToSvgPath(artwork.lineLoops),
     })
+    if (artwork.strokeLoops?.length) {
+      layers.push({
+        id: 'stroke-ghost',
+        fill: baseplateSettings.lineColor,
+        opacity: 0.45,
+        path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
   } else if (artwork) {
     layers.push({
       id: 'baseplate',
@@ -759,6 +782,13 @@ function buildVectorPreviewScene(
       fill: baseplateSettings.lineColor,
       path: loopsToSvgPath(artwork.lineLoops),
     })
+    if (artwork.strokeLoops?.length) {
+      layers.push({
+        id: 'stroke',
+        fill: baseplateSettings.lineColor,
+        path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
   }
 
   return {

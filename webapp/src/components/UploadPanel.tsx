@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Copy, FileCode2, ImagePlus, LayoutGrid, LoaderCircle, SlidersHorizontal, Sparkles, Trash2, Upload } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, FileCode2, ImagePlus, LayoutGrid, LoaderCircle, SlidersHorizontal, Sparkles, Trash2, Upload, CheckCircle2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { BatchSourceItem, ImportedLineart, LineartSettings, SourceImage, SourceKind } from '@/types/generator'
 import { AI_PROMPT_TEXT, autoCropFilmstrip, copyTextToClipboard, dataUrlToFile, downloadDataUrl, mergeImagesToFilmstrip } from '@/utils/filmstrip'
@@ -12,6 +12,7 @@ interface UploadPanelProps {
   settings: LineartSettings
   despeckleLocked?: boolean
   processing: boolean
+  workMode: 'filigree' | 'seal'
   onUploadImages: (files: File[]) => void
   onImportDxf: (file: File) => void
   onUpdateSettings: (patch: Partial<LineartSettings>) => void
@@ -29,6 +30,7 @@ export function UploadPanel({
   settings,
   despeckleLocked = false,
   processing,
+  workMode,
   onUploadImages,
   onImportDxf,
   onUpdateSettings,
@@ -36,6 +38,7 @@ export function UploadPanel({
   onRemoveEntry,
   onClearEntries,
 }: UploadPanelProps) {
+  const isSealMode = workMode === 'seal'
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const dxfInputRef = useRef<HTMLInputElement | null>(null)
   const [draftTargetColor, setDraftTargetColor] = useState(settings.targetColor)
@@ -43,6 +46,12 @@ export function UploadPanel({
   useEffect(() => {
     setDraftTargetColor(settings.targetColor)
   }, [settings.targetColor])
+
+  useEffect(() => {
+    if (isSealMode && !settings.mirror) {
+      onUpdateSettings({ mirror: true })
+    }
+  }, [isSealMode, settings.mirror, onUpdateSettings])
 
   const commitTargetColor = () => {
     if (draftTargetColor !== settings.targetColor) {
@@ -57,6 +66,8 @@ export function UploadPanel({
   const [aiAssistOpen, setAiAssistOpen] = useState(false)
   const [aiAction, setAiAction] = useState<'idle' | 'merging' | 'importing'>('idle')
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied'>('idle')
+  const [pendingCroppedUrls, setPendingCroppedUrls] = useState<string[]>([])
+  const [selectedCroppedIndex, setSelectedCroppedIndex] = useState<number>(0)
 
   const imageEntries = entries.filter((entry) => entry.sourceKind === 'image' && entry.sourceImage)
 
@@ -93,14 +104,32 @@ export function UploadPanel({
         window.alert('未在图片中检测到内容，请确认是否为胶卷图')
         return
       }
+      if (isSealMode && cropped.length > 1) {
+        setPendingCroppedUrls(cropped)
+        setSelectedCroppedIndex(0)
+        return
+      }
       const files = cropped.map((url, index) => dataUrlToFile(url, `filmstrip-cell-${String(index + 1).padStart(2, '0')}.png`))
       onClearEntries()
-      onUploadImages(files)
+      onUploadImages(isSealMode ? files.slice(0, 1) : files)
     } catch (error) {
       window.alert(error instanceof Error ? error.message : '导入胶卷图失败')
     } finally {
       setAiAction('idle')
     }
+  }
+
+  const handleConfirmCroppedSelection = () => {
+    const url = pendingCroppedUrls[selectedCroppedIndex]
+    if (!url) return
+    const file = dataUrlToFile(url, 'filmstrip-cell-selected.png')
+    onClearEntries()
+    onUploadImages([file])
+    setPendingCroppedUrls([])
+  }
+
+  const handleCancelCroppedSelection = () => {
+    setPendingCroppedUrls([])
   }
 
   const handleCopyPrompt = async () => {
@@ -163,12 +192,15 @@ export function UploadPanel({
         ref={imageInputRef}
         type="file"
         accept="image/png,image/jpeg,image/webp,image/gif"
-        multiple
+        multiple={!isSealMode}
         className="hidden"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? [])
           if (files.length) {
-            onUploadImages(files)
+            if (isSealMode) {
+              onClearEntries()
+            }
+            onUploadImages(isSealMode ? files.slice(0, 1) : files)
           }
           event.target.value = ''
         }}
@@ -423,12 +455,13 @@ export function UploadPanel({
             />
           </label>
           <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-            <span>水平镜像</span>
+            <span>水平镜像{isSealMode && <span className="ml-1 text-[11px] text-slate-400">（印章模式自动开启）</span>}</span>
             <input
               type="checkbox"
               checked={settings.mirror}
+              disabled={isSealMode}
               onChange={(event) => onUpdateSettings({ mirror: event.target.checked })}
-              className="h-4 w-4 accent-[#0088ff]"
+              className="h-4 w-4 accent-[#0088ff] disabled:cursor-not-allowed"
             />
           </label>
         </div>
@@ -460,6 +493,69 @@ export function UploadPanel({
           </div>
         </div>
       </div>
+
+      {pendingCroppedUrls.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm">
+          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_32px_120px_rgba(15,23,42,0.28)]">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-[11px] font-medium text-sky-700">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  印章模式
+                </div>
+                <h2 className="mt-3 text-lg font-semibold text-slate-950">选择要使用的印章图案</h2>
+                <p className="mt-1 text-sm text-slate-500">已自动裁剪出 {pendingCroppedUrls.length} 张图片，印章模式仅允许导入一张，请选择其中一张。</p>
+              </div>
+            </div>
+
+            <div className="grid max-h-[60vh] grid-cols-2 gap-4 overflow-y-auto p-6 sm:grid-cols-3 lg:grid-cols-4">
+              {pendingCroppedUrls.map((url, index) => {
+                const selected = selectedCroppedIndex === index
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => setSelectedCroppedIndex(index)}
+                    className={`relative overflow-hidden rounded-[22px] border text-left transition ${
+                      selected ? 'border-sky-300 bg-sky-50 shadow-[0_12px_32px_rgba(0,136,255,0.08)]' : 'border-slate-200 bg-white hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="aspect-square bg-slate-100 p-3">
+                      <img src={url} alt={`裁剪图 ${index + 1}`} className="h-full w-full rounded-2xl object-contain" />
+                    </div>
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="text-sm font-medium text-slate-900">第 {index + 1} 张</div>
+                      {selected
+                        ? <CheckCircle2 className="h-5 w-5 text-[#0088ff]" />
+                        : <div className="h-5 w-5 rounded-full border-2 border-slate-200" />}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-slate-200 px-6 py-5">
+              <div className="text-sm text-slate-500">将导入选中的 1 张图片到素材列表。</div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleCancelCroppedSelection}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmCroppedSelection}
+                  className="rounded-2xl bg-[#0088ff] px-4 py-2 text-sm font-medium text-white shadow-[0_14px_32px_rgba(0,136,255,0.28)] transition hover:bg-[#0077e0]"
+                >
+                  导入选中图片
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

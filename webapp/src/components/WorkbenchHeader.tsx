@@ -1,19 +1,21 @@
-import { Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Upload } from 'lucide-react'
-import { useRef } from 'react'
-import type { BaseTemplate, PreviewMode } from '@/types/generator'
+import { ChevronDown, Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Upload, Settings2, MoreHorizontal } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import type { BaseTemplate, PreviewMode, WorkMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
 const modes: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览', '3D预览']
 const templates: Array<{ value: BaseTemplate; label: string }> = [
-  { value: 'outline', label: '轮廓底板' },
-  { value: 'rectangle', label: '矩形底板' },
-  { value: 'circle', label: '圆形底板' },
+  { value: 'outline', label: '轮廓' },
+  { value: 'rectangle', label: '矩形' },
+  { value: 'circle', label: '圆形' },
 ]
 
 interface WorkbenchHeaderProps {
   appVersion: string
+  workMode: WorkMode
   previewMode: PreviewMode
   template: BaseTemplate
+  onWorkModeChange: (mode: WorkMode) => void
   onPreviewModeChange: (mode: PreviewMode) => void
   onTemplateChange: (template: BaseTemplate) => void
   onExportSettings: () => void
@@ -25,10 +27,17 @@ interface WorkbenchHeaderProps {
   canExport: boolean
 }
 
+const workModes: Array<{ value: WorkMode; label: string; icon: typeof Layers3 }> = [
+  { value: 'filigree', label: '掐丝', icon: Layers3 },
+  { value: 'seal', label: '印章', icon: Stamp },
+]
+
 export function WorkbenchHeader({
   appVersion,
+  workMode,
   previewMode,
   template,
+  onWorkModeChange,
   onPreviewModeChange,
   onTemplateChange,
   onExportSettings,
@@ -40,61 +49,106 @@ export function WorkbenchHeader({
   canExport,
 }: WorkbenchHeaderProps) {
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null)
+  const exportMenuRef = useRef<HTMLDivElement | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(event.target as Node)) {
+        setSettingsOpen(false)
+      }
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setExportOpen(false)
+      }
+    }
+    if (settingsOpen || exportOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+    return undefined
+  }, [settingsOpen, exportOpen])
 
   return (
-    <header className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div className="space-y-2">
-          <div className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium tracking-[0.24em] text-sky-700">
+    <header className="rounded-[28px] border border-slate-200 bg-white px-6 py-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-4">
+          <div className="inline-flex shrink-0 items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium tracking-[0.2em] text-sky-700">
             <Layers3 className="h-3.5 w-3.5" />
             线稿底板工作台
           </div>
-          <div>
-            <h1 className="font-display text-[30px] leading-none text-slate-950">线稿底板生成器</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-500">
-              导入图片或 DXF，生成可调线稿、自动底板和独立对象 3MF。目标是让底板与线稿能在切片软件里分别分配耗材。
+          <div className="hidden h-8 w-px bg-slate-200 sm:block" />
+          <div className="min-w-0">
+            <h1 className="font-display text-[22px] leading-none text-slate-950">线稿底板生成器</h1>
+            <p className="mt-1 hidden truncate text-xs text-slate-500 md:block">
+              导入图片或 DXF，生成可调线稿、自动底板和独立对象 3MF
             </p>
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <div className="grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <SegmentedGroup>
+            {workModes.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => onWorkModeChange(item.value)}
+                  className={cn(
+                    'inline-flex items-center justify-center gap-1 rounded-[12px] px-2.5 py-1.5 text-xs font-medium transition',
+                    workMode === item.value
+                      ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
+                      : 'text-slate-500 hover:bg-white/70 hover:text-slate-800',
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {item.label}
+                </button>
+              )
+            })}
+          </SegmentedGroup>
+
+          <SegmentedGroup>
             {templates.map((item) => (
               <button
                 key={item.value}
                 type="button"
                 onClick={() => onTemplateChange(item.value)}
                 className={cn(
-                  'rounded-[14px] px-3 py-2 text-xs font-medium transition',
+                  'rounded-[12px] px-2.5 py-1.5 text-xs font-medium transition',
                   template === item.value
-                    ? 'bg-white text-slate-950 shadow-[0_6px_16px_rgba(15,23,42,0.08)]'
+                    ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
                     : 'text-slate-500 hover:bg-white/70 hover:text-slate-800',
                 )}
               >
                 {item.label}
               </button>
             ))}
-          </div>
+          </SegmentedGroup>
 
-          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 md:grid-cols-5">
+          <SegmentedGroup>
             {modes.map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => onPreviewModeChange(mode)}
                 className={cn(
-                  'rounded-[14px] px-3 py-2 text-xs font-medium transition',
+                  'rounded-[12px] px-2.5 py-1.5 text-xs font-medium transition',
                   previewMode === mode
-                    ? 'bg-white text-slate-950 shadow-[0_6px_16px_rgba(15,23,42,0.08)]'
+                    ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
                     : 'text-slate-500 hover:bg-white/70 hover:text-slate-800',
                 )}
               >
                 {mode}
               </button>
             ))}
-          </div>
+          </SegmentedGroup>
 
-          <div className="flex items-center gap-2">
+          <div className="mx-1 hidden h-6 w-px bg-slate-200 lg:block" />
+
+          <div className="flex items-center gap-1.5">
             <input
               ref={importInputRef}
               type="file"
@@ -108,74 +162,101 @@ export function WorkbenchHeader({
                 event.currentTarget.value = ''
               }}
             />
-            <button
-              type="button"
-              onClick={onResetSettings}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
-            >
-              <RotateCcw className="h-4 w-4" />
-              恢复默认配置
-            </button>
-            <button
-              type="button"
-              onClick={() => importInputRef.current?.click()}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
-            >
-              <Upload className="h-4 w-4" />
-              导入参数
-            </button>
-            <button
-              type="button"
-              onClick={onExportSettings}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
-            >
-              <Download className="h-4 w-4" />
-              导出参数
-            </button>
-            <button
-              type="button"
-              onClick={onExportPreview}
-              disabled={!canExport}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
-            >
-              <Eye className="h-4 w-4" />
-              导出预览
-            </button>
-            <button
-              type="button"
-              onClick={onExportJson}
-              disabled={!canExport}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition enabled:hover:border-slate-300 enabled:hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Download className="h-4 w-4" />
-              导出方案
-            </button>
+
+            <div ref={settingsMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => { setSettingsOpen((v) => !v); setExportOpen(false) }}
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                设置
+                <ChevronDown className={cn('h-3 w-3 transition', settingsOpen && 'rotate-180')} />
+              </button>
+              {settingsOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_16px_48px_rgba(15,23,42,0.12)]">
+                  <MenuItem icon={RotateCcw} label="恢复默认配置" onClick={() => { onResetSettings(); setSettingsOpen(false) }} />
+                  <MenuItem icon={Upload} label="导入参数" onClick={() => { importInputRef.current?.click(); setSettingsOpen(false) }} />
+                  <MenuItem icon={Download} label="导出参数" onClick={() => { onExportSettings(); setSettingsOpen(false) }} />
+                </div>
+              )}
+            </div>
+
+            <div ref={exportMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => { setExportOpen((v) => !v); setSettingsOpen(false) }}
+                disabled={!canExport}
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+                更多
+                <ChevronDown className={cn('h-3 w-3 transition', exportOpen && 'rotate-180')} />
+              </button>
+              {exportOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_16px_48px_rgba(15,23,42,0.12)]">
+                  <MenuItem icon={Eye} label="导出预览 PNG" onClick={() => { onExportPreview(); setExportOpen(false) }} disabled={!canExport} />
+                  <MenuItem icon={Download} label="导出工程 JSON" onClick={() => { onExportJson(); setExportOpen(false) }} disabled={!canExport} />
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={onExport3mf}
               disabled={!canExport}
-              className="inline-flex items-center gap-2 rounded-2xl bg-[#0088ff] px-4 py-2 text-sm font-medium text-white shadow-[0_14px_32px_rgba(0,136,255,0.28)] transition enabled:hover:bg-[#0077e0] disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0088ff] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_8px_24px_rgba(0,136,255,0.28)] transition hover:bg-[#0077e0] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <FileArchive className="h-4 w-4" />
+              <FileArchive className="h-3.5 w-3.5" />
               导出 3MF
             </button>
           </div>
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-        <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5">
-          <ImageUp className="h-3.5 w-3.5" />
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1">
+          <ImageUp className="h-3 w-3" />
           上传图片或导入 DXF 即可开始
-        </div>
-        <div className="rounded-full bg-slate-100 px-3 py-1.5">当前版本 v{appVersion}</div>
-        <div className="rounded-full bg-slate-100 px-3 py-1.5">桌面优先工作台</div>
-        <div className="rounded-full bg-slate-100 px-3 py-1.5">纯色扁平界面</div>
-        <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5">
-          <Shapes className="h-3.5 w-3.5" />
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-1">v{appVersion}</span>
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1">
+          <Shapes className="h-3 w-3" />
           底板与线稿独立对象导出
-        </div>
+        </span>
       </div>
     </header>
+  )
+}
+
+function SegmentedGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-0.5 rounded-xl bg-slate-100 p-0.5">
+      {children}
+    </div>
+  )
+}
+
+function MenuItem({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: typeof RotateCcw
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <Icon className="h-3.5 w-3.5 text-slate-500" />
+      {label}
+    </button>
   )
 }

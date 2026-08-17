@@ -10,10 +10,12 @@ import type {
   PrintBedPlacementItem,
   PrintBedSettings,
   ProcessedArtwork,
+  SealSettings,
   SourceImage,
   ThreeMfTemplateProfile,
   VectorLoop,
   VectorPoint,
+  WorkMode,
 } from '@/types/generator'
 import { clamp, colorDistance, hexToRgb } from './color'
 import {
@@ -33,6 +35,8 @@ interface ProcessArtworkInput {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
+  sealSettings?: SealSettings
+  workMode?: WorkMode
 }
 
 interface Bounds {
@@ -161,6 +165,8 @@ export async function processArtwork({
   lineartSettings,
   baseplateSettings,
   extrudeSettings,
+  sealSettings,
+  workMode,
 }: ProcessArtworkInput): Promise<ProcessedArtwork> {
   const source = importedLineart
     ? {
@@ -236,6 +242,16 @@ export async function processArtwork({
     baseLoops = createTemplateBaseLoops(baseplateSettings)
   }
 
+  let strokeLoops: VectorLoop[] | undefined
+  if (workMode === 'seal' && sealSettings?.strokeEnabled) {
+    strokeLoops = buildSealStrokeLoops(
+      baseLoops,
+      sealSettings.strokeWidthMm,
+      pixelsPerMm,
+      paddingMm,
+    )
+  }
+
   const previews = buildPreviewAssets(
     visibleLineLoops,
     baseLoops,
@@ -250,6 +266,7 @@ export async function processArtwork({
     sourceHeight: source.height,
     lineLoops: visibleLineLoops,
     baseLoops,
+    strokeLoops,
     boardWidthMm,
     boardHeightMm,
     pixelsPerMm,
@@ -283,14 +300,18 @@ export function export3mf(
   extrudeSettings: ExtrudeSettings,
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
+  sealSettings?: SealSettings | null,
 ) {
-  const bytes = build3mfPackage(artwork, baseplateSettings, extrudeSettings, printBedSettings, threeMfProfile)
+  const bytes = sealSettings
+    ? buildSeal3mfPackage(artwork, baseplateSettings, sealSettings, printBedSettings, threeMfProfile)
+    : build3mfPackage(artwork, baseplateSettings, extrudeSettings, printBedSettings, threeMfProfile)
   downloadBlob(filename, new Blob([bytes], { type: 'model/3mf' }))
 }
 
 export function buildLineartSvgDocument(artwork: ProcessedArtwork, settings: BaseplateSettings) {
   const basePaths = loopsToSvgPath(artwork.baseLoops)
   const linePaths = loopsToSvgPath(artwork.lineLoops)
+  const strokePaths = artwork.strokeLoops ? loopsToSvgPath(artwork.strokeLoops) : ''
 
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -300,6 +321,7 @@ export function buildLineartSvgDocument(artwork: ProcessedArtwork, settings: Bas
     `  <g id="baseplate" fill="${settings.baseColor}">`,
     `    <path d="${basePaths}" />`,
     '  </g>',
+    strokePaths ? `  <g id="stroke" fill="${settings.lineColor}">\n    <path d="${strokePaths}" />\n  </g>` : '',
     `  <g id="lineart" fill="${settings.lineColor}">`,
     `    <path d="${linePaths}" />`,
     '  </g>',
@@ -537,6 +559,356 @@ export function build3mfPackage(
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
   }, { level: 0 })
+}
+
+export function buildSeal3mfPackage(
+  artwork: ProcessedArtwork,
+  baseplateSettings: BaseplateSettings,
+  sealSettings: SealSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
+) {
+  const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
+  const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
+  const lineMeshPixelsPerMm = chooseSingleExportPixelsPerMm(artwork)
+
+  const singlePlacement = planPrintBedLayout([{
+    id: 'single-artwork',
+    label: '单文件导出',
+    widthMm: artwork.boardWidthMm,
+    heightMm: artwork.boardHeightMm,
+  }], printBedSettings).placements[0]
+  const offsetX = singlePlacement?.xMm ?? 0
+  const offsetY = singlePlacement?.yMm ?? 0
+
+  const sealHeightMm = sealSettings.sealHeightMm
+  const engravingDiffMm = sealSettings.engravingHeightDiffMm
+
+  let baseMesh: MeshData
+  let lineMesh: MeshData
+  let strokeMesh: MeshData | null = null
+
+  const flippedStrokeLoops = artwork.strokeLoops?.length
+    ? flipLoopsForModelExport(artwork.strokeLoops!, artwork.boardHeightMm)
+    : null
+
+  if (sealSettings.carvingMode === 'relief') {
+    baseMesh = translateMesh(
+      extrudeLoopsToMesh(
+        keepOuterLoops(flippedBaseLoops),
+        0,
+        sealHeightMm,
+      ),
+      offsetX,
+      offsetY,
+    )
+    lineMesh = translateMesh(
+      extrudeMaskToMesh(
+        flippedLineLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        sealHeightMm,
+        engravingDiffMm,
+        MIN_EXPORTABLE_LINE_WIDTH_MM,
+      ),
+      offsetX,
+      offsetY,
+    )
+    if (flippedStrokeLoops?.length) {
+      strokeMesh = translateMesh(
+        extrudeMaskToMesh(
+          flippedStrokeLoops,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          lineMeshPixelsPerMm,
+          sealHeightMm,
+          engravingDiffMm,
+          MIN_EXPORTABLE_LINE_WIDTH_MM,
+        ),
+        offsetX,
+        offsetY,
+      )
+    }
+  } else {
+    const baseMask = rasterizeLoopsToMask(
+      keepOuterLoops(flippedBaseLoops),
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      0,
+    )
+    const lineMask = rasterizeLoopsToMask(
+      flippedLineLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      0,
+    )
+    let cutMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
+
+    if (flippedStrokeLoops?.length) {
+      const strokeMask = rasterizeLoopsToMask(
+        flippedStrokeLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        0,
+      )
+      cutMask = subtractMask(cutMask, strokeMask.mask, baseMask.width, baseMask.height)
+    }
+
+    const cutLoops = traceMaskToLoops(cutMask, baseMask.width, baseMask.height)
+      .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
+
+    baseMesh = translateMesh(
+      extrudeLoopsToMesh(
+        keepOuterLoops(cutLoops),
+        0,
+        sealHeightMm,
+      ),
+      offsetX,
+      offsetY,
+    )
+    lineMesh = translateMesh(
+      extrudeMaskToMesh(
+        flippedLineLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        Math.max(0, sealHeightMm - engravingDiffMm),
+        engravingDiffMm,
+        MIN_EXPORTABLE_LINE_WIDTH_MM,
+      ),
+      offsetX,
+      offsetY,
+    )
+    if (flippedStrokeLoops?.length) {
+      strokeMesh = translateMesh(
+        extrudeMaskToMesh(
+          flippedStrokeLoops,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          lineMeshPixelsPerMm,
+          Math.max(0, sealHeightMm - engravingDiffMm),
+          engravingDiffMm,
+          MIN_EXPORTABLE_LINE_WIDTH_MM,
+        ),
+        offsetX,
+        offsetY,
+      )
+    }
+  }
+
+  const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
+  const modelXml = buildSeal3mfModelXml(baseMesh, lineMesh, strokeMesh, baseplateSettings, applicationName, sealSettings)
+
+  const contentTypes = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+    '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+    '  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>',
+    '</Types>',
+  ].join('\n')
+  const rootRels = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    '  <Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>',
+    '</Relationships>',
+  ].join('\n')
+
+  const parts: Array<{ id: number; name: string; extruder: number }> = [
+    { id: 2, name: '印章', extruder: 1 },
+    { id: 3, name: '线稿', extruder: 2 },
+  ]
+  if (strokeMesh) {
+    parts.push({ id: 5, name: '描边', extruder: 1 })
+  }
+  const modelSettings = buildBambuModelSettingsConfig([
+    {
+      id: 4,
+      name: sealSettings.carvingMode === 'intaglio' ? '阴刻印章' : '阳刻印章',
+      parts,
+    },
+  ], [{
+    plateIndex: 0,
+    objectIds: [4],
+    identifyIds: [1],
+  }])
+  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+  const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
+  const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
+
+  return zipSync({
+    '[Content_Types].xml': strToU8(contentTypes),
+    '_rels/.rels': strToU8(rootRels),
+    '3D/3dmodel.model': strToU8(modelXml),
+    'Metadata/model_settings.config': strToU8(modelSettings),
+    'Metadata/project_settings.config': strToU8(projectSettings),
+    'Metadata/slice_info.config': strToU8(sliceInfoConfig),
+    'Metadata/filament_sequence.json': strToU8(filamentSequence),
+  }, { level: 0 })
+}
+
+function buildSeal3mfModelXml(
+  baseMesh: MeshData,
+  lineMesh: MeshData,
+  strokeMesh: MeshData | null,
+  baseplateSettings: BaseplateSettings,
+  applicationName: string,
+  sealSettings: SealSettings,
+) {
+  const baseColor = `${baseplateSettings.baseColor.toUpperCase()}FF`
+  const lineColor = `${baseplateSettings.lineColor.toUpperCase()}FF`
+  const baseObjectId = 2
+  const lineObjectId = 3
+  const compositeObjectId = 4
+  const strokeObjectId = 5
+
+  const basematerialId = 1
+
+  const objects: string[] = []
+  objects.push(meshTo3mfObject(baseMesh, baseObjectId, '印章底板', 0))
+  objects.push(meshTo3mfObject(lineMesh, lineObjectId, sealSettings.carvingMode === 'intaglio' ? '阴刻线稿' : '阳刻线稿', 1))
+
+  const componentIds = [baseObjectId, lineObjectId]
+  if (strokeMesh) {
+    objects.push(meshTo3mfObject(strokeMesh, strokeObjectId, '印章描边', 0))
+    componentIds.push(strokeObjectId)
+  }
+
+  objects.push(build3mfCompositeObject(compositeObjectId, sealSettings.carvingMode === 'intaglio' ? '阴刻印章' : '阳刻印章', componentIds))
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
+    `  <metadata name="Application">${applicationName}</metadata>`,
+    '  <metadata name="Designer">线稿底板生成器</metadata>',
+    `  <metadata name="Title">${escapeXmlAttribute(sealSettings.carvingMode === 'intaglio' ? '阴刻印章 3MF' : '阳刻印章 3MF')}</metadata>`,
+    '  <resources>',
+    `    <basematerials id="${basematerialId}">`,
+    `      <base name="印章底板" displaycolor="${baseColor}"/>`,
+    `      <base name="印章线稿" displaycolor="${lineColor}"/>`,
+    `    </basematerials>`,
+    ...objects,
+    '  </resources>',
+    '  <build>',
+    `    <item objectid="${compositeObjectId}"/>`,
+    '  </build>',
+    '</model>',
+  ].join('\n')
+}
+
+export function buildSealPreviewModelGltfBlob(
+  artwork: PreviewModelArtworkInput & { strokeLoops?: VectorLoop[] },
+  baseplateSettings: BaseplateSettings,
+  sealSettings: SealSettings,
+) {
+  const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
+  const sealHeightMm = sealSettings.sealHeightMm
+  const engravingDiffMm = sealSettings.engravingHeightDiffMm
+
+  const meshes: Array<{ mesh: MeshData; name: string; color: string }> = []
+
+  const strokeLoops = artwork.strokeLoops?.length ? artwork.strokeLoops : null
+
+  if (sealSettings.carvingMode === 'relief') {
+    const baseMesh = extrudeLoopsToMesh(
+      keepOuterLoops(artwork.baseLoops),
+      0,
+      sealHeightMm,
+    )
+    const lineMesh = extrudeMaskToMesh(
+      artwork.lineLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      sealHeightMm,
+      engravingDiffMm,
+      MIN_EXPORTABLE_LINE_WIDTH_MM,
+    )
+    meshes.push({ mesh: baseMesh, name: '印章', color: baseplateSettings.baseColor })
+    meshes.push({ mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor })
+    if (strokeLoops?.length) {
+      const strokeMesh = extrudeMaskToMesh(
+        strokeLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        sealHeightMm,
+        engravingDiffMm,
+        MIN_EXPORTABLE_LINE_WIDTH_MM,
+      )
+      meshes.push({ mesh: strokeMesh, name: '描边', color: baseplateSettings.lineColor })
+    }
+  } else {
+    const baseMask = rasterizeLoopsToMask(
+      keepOuterLoops(artwork.baseLoops),
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      0,
+    )
+    const lineMask = rasterizeLoopsToMask(
+      artwork.lineLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      0,
+    )
+    let cutMask = subtractMask(baseMask.mask, lineMask.mask, baseMask.width, baseMask.height)
+
+    if (strokeLoops?.length) {
+      const strokeMask = rasterizeLoopsToMask(
+        strokeLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        0,
+      )
+      cutMask = subtractMask(cutMask, strokeMask.mask, baseMask.width, baseMask.height)
+    }
+
+    const cutLoops = traceMaskToLoops(cutMask, baseMask.width, baseMask.height)
+      .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
+
+    const baseMesh = extrudeLoopsToMesh(
+      keepOuterLoops(cutLoops),
+      0,
+      sealHeightMm,
+    )
+    const lineMesh = extrudeMaskToMesh(
+      artwork.lineLoops,
+      artwork.boardWidthMm,
+      artwork.boardHeightMm,
+      lineMeshPixelsPerMm,
+      Math.max(0, sealHeightMm - engravingDiffMm),
+      engravingDiffMm,
+      MIN_EXPORTABLE_LINE_WIDTH_MM,
+    )
+    meshes.push({ mesh: baseMesh, name: '印章', color: baseplateSettings.baseColor })
+    meshes.push({ mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor })
+    if (strokeLoops?.length) {
+      const strokeMesh = extrudeMaskToMesh(
+        strokeLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        Math.max(0, sealHeightMm - engravingDiffMm),
+        engravingDiffMm,
+        MIN_EXPORTABLE_LINE_WIDTH_MM,
+      )
+      meshes.push({ mesh: strokeMesh, name: '描边', color: baseplateSettings.lineColor })
+    }
+  }
+
+  return buildGltfPreviewBlob(
+    meshes,
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+  )
 }
 
 export function buildPreviewModelGltfBlob(
@@ -1687,6 +2059,39 @@ function erodeMask(mask: Uint8Array, width: number, height: number, radius: numb
   }
 
   return output
+}
+
+function subtractMask(baseMask: Uint8Array, cutMask: Uint8Array, width: number, height: number) {
+  const output = new Uint8Array(baseMask.length)
+  for (let i = 0; i < baseMask.length; i += 1) {
+    output[i] = baseMask[i] && !cutMask[i] ? 1 : 0
+  }
+  void width
+  void height
+  return output
+}
+
+function buildSealStrokeLoops(
+  baseLoops: VectorLoop[],
+  strokeWidthMm: number,
+  pixelsPerMm: number,
+  paddingMm: number,
+): VectorLoop[] {
+  if (strokeWidthMm <= 0 || !baseLoops.length) return []
+
+  const bounds = getLoopBounds(baseLoops)
+  const width = Math.max(1, Math.ceil((bounds.width + paddingMm * 2) * pixelsPerMm))
+  const height = Math.max(1, Math.ceil((bounds.height + paddingMm * 2) * pixelsPerMm))
+
+  const baseMask = rasterizeLoopsToMask(baseLoops, bounds.width, bounds.height, pixelsPerMm, paddingMm)
+  const eroded = erodeMask(baseMask.mask, baseMask.width, baseMask.height, Math.max(1, Math.round(strokeWidthMm * pixelsPerMm)))
+  const strokeMask = subtractMask(baseMask.mask, eroded, baseMask.width, baseMask.height)
+
+  const traced = traceMaskToLoops(strokeMask, baseMask.width, baseMask.height)
+    .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
+    .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
+
+  return smoothLoops(traced, 2)
 }
 
 function getSlimLineMask(mask: Uint8Array, width: number, height: number) {

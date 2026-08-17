@@ -1,7 +1,7 @@
 import { Box, LoaderCircle } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { BaseplateSettings, ExtrudeSettings, ProcessedArtwork } from '@/types/generator'
+import type { BaseplateSettings, ExtrudeSettings, ProcessedArtwork, SealSettings, WorkMode } from '@/types/generator'
 
 let modelViewerImportPromise: Promise<unknown> | null = null
 const previewModelCache = new WeakMap<ProcessedArtwork, Map<string, string>>()
@@ -22,7 +22,21 @@ function ensureModelViewerDefined() {
 function getPreviewCacheKey(
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  sealSettings?: SealSettings,
+  workMode?: WorkMode,
 ) {
+  if (workMode === 'seal' && sealSettings) {
+    return [
+      baseplateSettings.baseColor,
+      baseplateSettings.lineColor,
+      workMode,
+      sealSettings.sealHeightMm,
+      sealSettings.engravingHeightDiffMm,
+      sealSettings.carvingMode,
+      sealSettings.strokeEnabled,
+      sealSettings.strokeWidthMm,
+    ].join('|')
+  }
   return [
     baseplateSettings.baseColor,
     baseplateSettings.lineColor,
@@ -57,21 +71,28 @@ interface ThreeDModelViewerProps {
   artwork: ProcessedArtwork
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
+  sealSettings?: SealSettings
+  workMode?: WorkMode
 }
 
 export function ThreeDModelViewer({
   artwork,
   baseplateSettings,
   extrudeSettings,
+  sealSettings,
+  workMode = 'filigree',
 }: ThreeDModelViewerProps) {
   const [modelUrl, setModelUrl] = useState<string | null>(null)
   const [isBuilding, setIsBuilding] = useState(false)
   const [buildError, setBuildError] = useState<string | null>(null)
-  const modelHeight = extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm
+  const isSealMode = workMode === 'seal' && sealSettings
+  const modelHeight = isSealMode
+    ? (sealSettings!.sealHeightMm + sealSettings!.engravingHeightDiffMm)
+    : (extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm)
   const cameraTarget = `0m ${Math.max(modelHeight * 0.5, 0.25)}m 0m`
 
   useEffect(() => {
-    const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings)
+    const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings, sealSettings, workMode)
     const cachedUrl = getCachedPreviewModelUrl(artwork, cacheKey)
     if (cachedUrl) {
       // #region debug-point A:viewer-cache-hit
@@ -137,12 +158,15 @@ export function ThreeDModelViewer({
         artwork: {
           baseLoops: artwork.baseLoops,
           lineLoops: artwork.lineLoops,
+          strokeLoops: artwork.strokeLoops,
           boardWidthMm: artwork.boardWidthMm,
           boardHeightMm: artwork.boardHeightMm,
           pixelsPerMm: artwork.pixelsPerMm,
         },
         baseplateSettings,
         extrudeSettings,
+        sealSettings,
+        workMode,
       })
     }
 
@@ -153,7 +177,7 @@ export function ThreeDModelViewer({
       setIsBuilding(false)
       worker.terminate()
     }
-  }, [artwork, baseplateSettings, extrudeSettings])
+  }, [artwork, baseplateSettings, extrudeSettings, sealSettings, workMode])
 
   return (
     <div className="relative h-full w-full">
@@ -172,47 +196,27 @@ export function ThreeDModelViewer({
           max-camera-orbit="auto auto 300%"
           shadow-intensity="0.9"
           touch-action="pan-y"
-          className="block h-full w-full"
-          style={{
-            '--progress-bar-color': '#0088ff',
-            backgroundColor: 'transparent',
-            minHeight: '100%',
-            width: '100%',
-            height: '100%',
-          } as CSSProperties}
+          style={{ width: '100%', height: '100%' } as CSSProperties}
         />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center">
-          {!isBuilding && (
-            <div className="inline-flex items-center gap-3 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_48px_rgba(15,23,42,0.22)]">
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-              正在构建 3D 模型
-            </div>
-          )}
-        </div>
-      )}
+      ) : null}
 
       {isBuilding && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/40 backdrop-blur-[2px]">
-          <div className="inline-flex items-center gap-3 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_48px_rgba(15,23,42,0.22)]">
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
             <LoaderCircle className="h-4 w-4 animate-spin" />
-            正在渲染 3D 预览
+            正在构建 3D 预览…
           </div>
         </div>
       )}
 
       {buildError && !isBuilding && (
-        <div className="absolute left-5 top-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600 shadow-sm">
-          {buildError}
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm text-red-600">
+            <Box className="h-4 w-4" />
+            {buildError}
+          </div>
         </div>
       )}
-
-      <div className="pointer-events-none absolute bottom-5 right-5 rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
-        <span className="inline-flex items-center gap-2">
-          <Box className="h-3.5 w-3.5" />
-          拖动旋转，滚轮缩放
-        </span>
-      </div>
     </div>
   )
 }
