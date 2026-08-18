@@ -239,12 +239,17 @@ export function PrintBedPanel({
                         const labelText = items.length > 1
                           ? String(items.findIndex((entry) => entry.id === placement.id) + 1)
                           : ''
+                        // 翻转 Y 轴：3MF 坐标系 Y=0 在底部，SVG Y=0 在顶部，
+                        // 需要翻转使预览与 3MF 输出一致（左下角起始）。
+                        const flippedY = layout.depthMm - placement.yMm - placement.heightMm
+                        // 编号字号自适应方格尺寸，取宽高较小者的 40%
+                        const fontSize = Math.min(placement.widthMm, placement.heightMm) * 0.4
 
                         return (
                           <g key={`${plate.plateIndex}-${placement.id}`}>
                             <rect
                               x={placement.xMm}
-                              y={placement.yMm}
+                              y={flippedY}
                               width={placement.widthMm}
                               height={placement.heightMm}
                               rx="2"
@@ -256,8 +261,8 @@ export function PrintBedPanel({
                             {labelText && (
                               <text
                                 x={placement.xMm + placement.widthMm / 2}
-                                y={placement.yMm + placement.heightMm / 2 + 3}
-                                fontSize="8"
+                                y={flippedY + placement.heightMm / 2 + fontSize * 0.35}
+                                fontSize={fontSize}
                                 fill={stroke}
                                 fontWeight="700"
                                 textAnchor="middle"

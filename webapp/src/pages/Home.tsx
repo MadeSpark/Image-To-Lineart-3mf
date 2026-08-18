@@ -297,14 +297,24 @@ export default function Home() {
       }
     }
 
-    setPlacementPreviewItems([{ entry: activeEntry, artwork: effectiveArtwork }])
+    // Pass ALL entries to the print bed layout so the arrangement is visible.
+    // Only the active entry has real processed artwork; for others, reuse the
+    // active entry's artwork as a dimension placeholder (boardWidthMm/HeightMm
+    // are determined by shared baseplate settings, not per-entry line art).
+    const previewItems: ProcessedBatchItem[] = entries.map((entry) => ({
+      entry,
+      artwork: entry.id === activeEntry.id
+        ? effectiveArtwork
+        : effectiveArtwork,
+    }))
+    setPlacementPreviewItems(previewItems)
     setPlacementPreviewProcessing(false)
     setPlacementPreviewError(null)
 
     return () => {
       cancelled = true
     }
-  }, [activeEntry, effectiveArtwork, entries.length])
+  }, [activeEntry, effectiveArtwork, entries])
 
   useEffect(() => {
     if (!qaqModeEnabled) return

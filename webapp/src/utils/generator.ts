@@ -2074,8 +2074,43 @@ function buildSealStrokeLoops(
 }
 
 function getSlimLineMask(mask: Uint8Array, width: number, height: number) {
-  const eroded = erodeMask(mask, width, height, 1)
-  return hasFilledPixel(eroded) ? eroded : mask
+  // Smart erosion that preserves fine lines (1-2px wide) while slimming thick structures.
+  // A pixel is only eroded if it has ≥5 filled 8-neighbors — meaning it is interior
+  // to a thick structure. Fine lines (1-2px) typically have only 2-4 filled neighbors
+  // and survive this pass, avoiding the "erase all thin details" problem of 4-connectivity erosion.
+
+  const eroded = mask.slice()
+  const toRemove: number[] = []
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue
+
+      let filledNeighbors = 0
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+            filledNeighbors += 1
+          } else if (mask[ny * width + nx]) {
+            filledNeighbors += 1
+          }
+        }
+      }
+
+      if (filledNeighbors >= 5) {
+        toRemove.push(y * width + x)
+      }
+    }
+  }
+
+  if (!toRemove.length) return mask.slice()
+  for (const idx of toRemove) {
+    eroded[idx] = 0
+  }
+  return eroded
 }
 
 function getAdaptivePreservedMask(mask: Uint8Array, width: number, height: number) {
@@ -2085,24 +2120,79 @@ function getAdaptivePreservedMask(mask: Uint8Array, width: number, height: numbe
     return mask.slice()
   }
 
-  const closed = erodeMask(dilateMask(mask, width, height, 1), width, height, 1)
-  const retainedRatio = getFilledPixelCount(closed) / Math.max(1, getFilledPixelCount(mask))
+  // Preserve fine lines before close operation:
+  // The close (dilate→erode) can merge nearby parallel fine lines.
+  // Extract fine structure (1-2px lines), apply close only to thicker areas,
+  // then recombine to keep fine lines intact.
+  const fineMask = extractFineStructures(mask, width, height)
+  const thickMask = subtractMask(mask, fineMask, width, height)
 
-  return retainedRatio >= 0.78 ? closed : mask.slice()
+  const closedThick = erodeMask(dilateMask(thickMask, width, height, 1), width, height, 1)
+  const combined = orMasks(fineMask, closedThick, width, height)
+
+  const retainedRatio = getFilledPixelCount(combined) / Math.max(1, getFilledPixelCount(mask))
+
+  return retainedRatio >= 0.80 ? combined : mask.slice()
 }
 
 function getAdaptiveLineMask(mask: Uint8Array, width: number, height: number) {
   const fillRatio = getFilledPixelCount(mask) / Math.max(1, width * height)
 
   // Low coverage images are usually already line art; shrinking them drops major details.
-  if (fillRatio < 0.12) {
+  if (fillRatio < 0.15) {
     return mask.slice()
   }
 
   const slimmed = getSlimLineMask(mask, width, height)
   const retainedRatio = getFilledPixelCount(slimmed) / Math.max(1, getFilledPixelCount(mask))
 
-  return retainedRatio >= 0.72 ? slimmed : mask.slice()
+  // With smart erosion that preserves fine lines, the retained ratio will be high.
+  // Only fall back if the erosion was too aggressive (lost more than 40% of pixels).
+  return retainedRatio >= 0.60 ? slimmed : mask.slice()
+}
+
+function extractFineStructures(mask: Uint8Array, width: number, height: number) {
+  const fine = new Uint8Array(mask.length)
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue
+
+      let filled8 = 0
+      let filled4 = 0
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+            filled8 += 1
+            if (dx !== 0 && dy !== 0) filled4 += 1
+          } else if (mask[ny * width + nx]) {
+            filled8 += 1
+            if (Math.abs(dx) + Math.abs(dy) === 1) filled4 += 1
+          }
+        }
+      }
+
+      // Fine structure: pixel has ≤3 filled 8-neighbors (1-2px wide lines)
+      if (filled8 <= 3) {
+        fine[y * width + x] = 1
+      }
+    }
+  }
+
+  return fine
+}
+
+function orMasks(a: Uint8Array, b: Uint8Array, width: number, height: number) {
+  void width
+  void height
+  const output = new Uint8Array(a.length)
+  for (let i = 0; i < a.length; i += 1) {
+    output[i] = a[i] || b[i] ? 1 : 0
+  }
+  return output
 }
 
 function hasFilledPixel(mask: Uint8Array) {

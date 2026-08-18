@@ -3,13 +3,17 @@ export const FILMSTRIP_MAX_ROWS = 5
 export const FILMSTRIP_CELL_SIZE = 512
 const CONTENT_THRESHOLD = 240
 
-export const AI_PROMPT_TEXT = `Convert the input image into a pristine, high-contrast black-and-white line art vectorization template. Strictly preserve the original pose, anatomical proportions, costume structures, and all intricate details without any creative redesign.
+export const AI_PROMPT_TEXT = `If the input image is a 5×5 film strip (i.e., a grid of 5 rows and 5 columns) with visible gaps between multiple frames, those gaps must be treated as default white (RGB 255,255,255) and strictly forbidden to be filled with black. Furthermore, the imported film strip images are derived from GIF animation decompositions, where each frame may have a different motion or pose; it is strictly prohibited to lazily overlook or omit any detailed action or key movement.
 
-Line quality: Clean, professional anime key-animation style (Genga). Lines must be dynamic with subtle natural weight variations (thicker at intersections/corners, thinner at ends), but rendered as 100% opaque, solid black ink lines. Strictly prohibit pencil-like textures, grainy noise, hollow interiors, or broken strokes.
+Convert the input image into a clean, high-contrast black-and-white line art vectorization template. Strictly preserve the original pose, anatomical proportions, costume structures, and all intricate details without any creative redesign.
 
-Cleanliness: Completely erase all rough sketches, construction grids, joint circles, overlapping drafts, and stray messy marks. Facial features must be delicate and soft; eyes detailed with refined lashes, expressing a natural, gentle emotion.
+Line quality: Professional anime key-animation style (Genga). Lines must be dynamic with subtle natural weight variations (thicker at intersections and corners, thinner at ends), but rendered as 100% opaque solid black ink lines. Strictly prohibit pencil-like textures (i.e., lines that are not pure black but appear as light gray pencil strokes), grainy noise, hollow interiors, or broken strokes.
 
-Technical specs for Vectorization: Pure matte white background (RGB 255,255,255). Zero shadows, zero grayscale, zero halftones, zero color saturation. Ensure extreme binary contrast (pure black vs. pure white). All primary outlines and internal folds must form closed, uninterrupted loops to allow seamless auto-tracing and infill path generation in 3D slicing software.`
+Canvas resolution: To avoid the input image's resolution from compromising the high-definition line art output, the output image resolution shall be upscaled proportionally to 4K relative to the original image dimensions.
+
+Cleanliness: Completely erase all rough sketches, construction grids, joint circles, overlapping drafts, and stray messy marks. Facial features must be delicate and soft; eyes must be detailed with refined lashes, expressing a natural, gentle emotion.
+
+Technical specifications for vectorization: Pure matte white background (RGB 255,255,255). Zero shadows, zero grayscale, zero halftones, zero color saturation. Ensure extreme binary contrast (pure black vs. pure white). All primary outlines and internal folds must form closed, uninterrupted loops to allow seamless auto‑tracing and infill path generation in 3D slicing software.`
 
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -123,6 +127,9 @@ interface ContentRange {
  * 找出连续的内容区间。
  * minGap：间隙小于此值的相邻区间会被合并（视为同一帧内部的留白）。
  * minRangeSize：宽度小于此值的区间被丢弃（视为细线噪点）。
+ *
+ * 使用自适应间隙阈值：先扫描原始间隙分布，找到「帧内小间隙」和「帧间大间隙」
+ * 的自然分界点，再以此决定合并阈值，避免因固定阈值过大而将相邻帧误合并。
  */
 function findContentRanges(hasContent: Uint8Array, minGap: number, minRangeSize: number): ContentRange[] {
   const rawRanges: ContentRange[] = []
@@ -141,18 +148,69 @@ function findContentRanges(hasContent: Uint8Array, minGap: number, minRangeSize:
 
   if (!rawRanges.length) return []
 
+  const gaps: number[] = []
+  for (let i = 1; i < rawRanges.length; i += 1) {
+    gaps.push(rawRanges[i].start - rawRanges[i - 1].end - 1)
+  }
+
+  let adaptiveMinGap = minGap
+  if (gaps.length >= 2) {
+    const sorted = [...new Set(gaps)].sort((a, b) => a - b)
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      if (sorted[i + 1] > sorted[i] * 2) {
+        adaptiveMinGap = Math.min(minGap, sorted[i])
+        break
+      }
+    }
+  }
+
   const merged: ContentRange[] = [{ start: rawRanges[0].start, end: rawRanges[0].end }]
   for (let i = 1; i < rawRanges.length; i += 1) {
     const prev = merged[merged.length - 1]
     const gap = rawRanges[i].start - prev.end - 1
-    if (gap < minGap) {
+    if (gap <= adaptiveMinGap) {
       prev.end = rawRanges[i].end
     } else {
       merged.push({ start: rawRanges[i].start, end: rawRanges[i].end })
     }
   }
 
-  return merged.filter((r) => r.end - r.start + 1 >= minRangeSize)
+  let result = merged.filter((r) => r.end - r.start + 1 >= minRangeSize)
+
+  // 将被错误合并的高 RowRange 拆回独立行：
+  // 如果某个区间高度显著大于中位行高，则按中位行高估算应拆成几行，
+  // 再用原始 hasContent 数据验证每个子区间是否真的有内容。
+  if (result.length > 0 && result.length < FILMSTRIP_MAX_ROWS) {
+    const heights = result.map((r) => r.end - r.start + 1).sort((a, b) => a - b)
+    const medianHeight = heights[Math.floor(heights.length / 2)]
+    const splitResult: ContentRange[] = []
+
+    for (const range of result) {
+      const height = range.end - range.start + 1
+      if (height > medianHeight * 1.4) {
+        const expectedCells = Math.max(2, Math.round(height / medianHeight))
+        const cellHeight = Math.floor(height / expectedCells)
+        for (let j = 0; j < expectedCells; j += 1) {
+          const subStart = range.start + j * cellHeight
+          const subEnd = j === expectedCells - 1 ? range.end : subStart + cellHeight - 1
+          if (subEnd - subStart + 1 >= minRangeSize) {
+            let hasDark = false
+            for (let y = subStart; y <= subEnd; y += 1) {
+              if (hasContent[y]) { hasDark = true; break }
+            }
+            if (hasDark) {
+              splitResult.push({ start: subStart, end: subEnd })
+            }
+          }
+        }
+      } else {
+        splitResult.push(range)
+      }
+    }
+    result = splitResult
+  }
+
+  return result
 }
 
 function findContentBoundingBox(imageData: ImageData): BoundingBox | null {
@@ -248,12 +306,13 @@ export async function autoCropFilmstrip(
     }
   }
 
-  // 间隙阈值：图片维度的 1%（最少 4px），小于此值的间隙视为帧内留白合并
-  // 区间最小尺寸：图片维度的 5%（最少 20px），小于此值的区间视为细线噪点丢弃
-  const minColGap = Math.max(4, Math.floor(w * 0.01))
-  const minRowGap = Math.max(4, Math.floor(h * 0.01))
-  const minColWidth = Math.max(20, Math.floor(w * 0.05))
-  const minRowHeight = Math.max(20, Math.floor(h * 0.05))
+  // 间隙阈值：使用较小的基础阈值（图片维度的 0.5%，最少 3px），
+  // 具体阈值由 findContentRanges 内的自适应算法根据间隙分布自动微调。
+  // 区间最小尺寸：图片维度的 3%（最少 16px），小于此值的区间视为细线噪点丢弃。
+  const minColGap = Math.max(3, Math.floor(w * 0.005))
+  const minRowGap = Math.max(3, Math.floor(h * 0.005))
+  const minColWidth = Math.max(16, Math.floor(w * 0.03))
+  const minRowHeight = Math.max(16, Math.floor(h * 0.03))
 
   const colRanges = findContentRanges(colContent, minColGap, minColWidth)
   const rowRanges = findContentRanges(rowContent, minRowGap, minRowHeight)
