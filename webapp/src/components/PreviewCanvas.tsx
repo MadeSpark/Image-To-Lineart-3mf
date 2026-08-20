@@ -1,4 +1,4 @@
-import { Eraser, Hand, LoaderCircle, MoveDiagonal2, PenLine, Pipette, RotateCcw } from 'lucide-react'
+import { Eraser, Hand, LoaderCircle, PenLine, Pipette, RotateCcw } from 'lucide-react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ThreeDModelViewer } from '@/components/ThreeDModelViewer'
@@ -19,6 +19,7 @@ interface PreviewCanvasProps {
   sourceImage: SourceImage | null
   artwork: ProcessedArtwork | null
   previewMode: PreviewMode
+  onPreviewModeChange: (mode: PreviewMode) => void
   processing: boolean
   error: string | null
   targetColor: string
@@ -33,6 +34,8 @@ interface PreviewCanvasProps {
   onPickTargetColor: (color: string) => void
 }
 
+const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板预览', '分层预览', '3D预览']
+
 const DEFAULT_VIEW_TRANSFORM = {
   scale: 1,
   panX: 0,
@@ -45,6 +48,7 @@ export function PreviewCanvas({
   sourceImage,
   artwork,
   previewMode,
+  onPreviewModeChange,
   processing,
   error,
   targetColor,
@@ -458,14 +462,23 @@ export function PreviewCanvas({
 
   return (
     <section className="relative overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
-      <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-950">主画布</h2>
-          <p className="mt-1 text-xs text-slate-500">画布高度被限制在首屏范围，导入后会优先看到完整排版，而不是把预览挤到页面下方。</p>
-        </div>
-        <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-medium text-slate-500">
-          <MoveDiagonal2 className="h-3.5 w-3.5" />
-          当前模式：{previewMode}
+      <div className="flex items-center justify-between border-b border-slate-200 px-6 py-3">
+        <h2 className="text-sm font-semibold text-slate-950">主画布</h2>
+        <div className="flex flex-wrap items-center gap-1 rounded-[14px] bg-slate-100 p-1">
+          {PREVIEW_MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onPreviewModeChange(mode)}
+              className={`rounded-[10px] px-2.5 py-1.5 text-xs font-medium transition ${
+                previewMode === mode
+                  ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
+                  : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -552,7 +565,14 @@ export function PreviewCanvas({
                       fill={layer.fill}
                       opacity={layer.opacity}
                     >
-                      <path d={layer.path} fillRule="evenodd" />
+                      <path
+                        d={layer.path}
+                        fillRule="evenodd"
+                        stroke={layer.stroke}
+                        strokeWidth={layer.strokeWidth}
+                        strokeLinecap={layer.strokeLinecap}
+                        strokeLinejoin={layer.strokeLinejoin}
+                      />
                     </g>
                   ))}
                   {canEditLineart && liveStrokePoints.length > 1 && lineartTool !== 'pan' && (
@@ -718,6 +738,10 @@ function buildVectorPreviewScene(
     id: string
     fill: string
     opacity?: number
+    stroke?: string
+    strokeWidth?: number
+    strokeLinecap?: 'butt' | 'round' | 'square'
+    strokeLinejoin?: 'miter' | 'round' | 'bevel'
     path: string
   }> = []
 
@@ -769,6 +793,60 @@ function buildVectorPreviewScene(
         fill: baseplateSettings.lineColor,
         opacity: 0.45,
         path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
+  } else if (previewMode === 'DXF预览' && artwork) {
+    // DXF 预览：按 CAD/3D 软件的习惯，用「细描边 + 顶点」直接显示
+    // 识别出的原始矢量路径，不做填充，尊重 loop.closed（开放路径保持开放）。
+    const DXF_LINE_COLOR = '#0f172a'
+    const DXF_LINE_WIDTH_MM = 0.12
+    const DXF_VERTEX_COLOR = '#ef4444'
+    const DXF_VERTEX_RADIUS_MM = 0.2
+    // 按每条 loop 单独输出，方便区分轮廓/开放折线；闭合 loop 用深色，
+    // 开放折线用中蓝色，视觉上和 CAD 中 polyline 的显示一致。
+    artwork.lineLoops.forEach((loop, index) => {
+      const path = buildLoopPath(loop.points, loop.closed)
+      if (!path) return
+      layers.push({
+        id: `dxf-line-${index}`,
+        fill: 'none',
+        stroke: loop.closed ? DXF_LINE_COLOR : '#1d4ed8',
+        strokeWidth: DXF_LINE_WIDTH_MM,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        path,
+      })
+    })
+    if (artwork.strokeLoops?.length) {
+      artwork.strokeLoops.forEach((loop, index) => {
+        const path = buildLoopPath(loop.points, loop.closed)
+        if (!path) return
+        layers.push({
+          id: `dxf-stroke-${index}`,
+          fill: 'none',
+          stroke: '#64748b',
+          strokeWidth: DXF_LINE_WIDTH_MM,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          path,
+        })
+      })
+    }
+    // 顶点：在每个控制点画一个小圆点（圆由短半径菱形近似 → 改用 SVG circle 更圆；
+    // 这里用 path 绘制很多小圆圈作为 stroke-only layer 是 OK 的，但为了简单
+    // 且避免大量 Mxx,Lyy 生成巨大字符串，统一用 path 画十字更轻量）。
+    const vertexPath = artwork.lineLoops
+      .flatMap((loop) => loop.points)
+      .map((point) => buildControlPointMarker(point.x, point.y, DXF_VERTEX_RADIUS_MM))
+      .join(' ')
+    if (vertexPath) {
+      layers.push({
+        id: 'dxf-vertices',
+        fill: 'none',
+        stroke: DXF_VERTEX_COLOR,
+        strokeWidth: DXF_LINE_WIDTH_MM,
+        strokeLinecap: 'round',
+        path: vertexPath,
       })
     }
   } else if (artwork) {
@@ -853,12 +931,12 @@ function formatVectorViewBox(bounds: { minX: number; minY: number; width: number
 
 function loopsToSvgPath(loops: VectorLoop[]) {
   return loops
-    .map((loop) => buildLoopPath(loop.points))
+    .map((loop) => buildLoopPath(loop.points, loop.closed))
     .filter(Boolean)
     .join(' ')
 }
 
-function buildLoopPath(points: VectorPoint[]) {
+function buildLoopPath(points: VectorPoint[], closed = true) {
   const [first, ...rest] = points
   if (!first) {
     return ''
@@ -867,7 +945,16 @@ function buildLoopPath(points: VectorPoint[]) {
   return [
     `M ${formatVectorNumber(first.x)} ${formatVectorNumber(first.y)}`,
     ...rest.map((point) => `L ${formatVectorNumber(point.x)} ${formatVectorNumber(point.y)}`),
-    'Z',
+    closed ? 'Z' : '',
+  ].filter(Boolean).join(' ')
+}
+
+// A small cross marker (~0.3mm) drawn at each vertex, used by the DXF preview
+// to make individual vector control points visible and inspectable.
+function buildControlPointMarker(x: number, y: number, radius = 0.15) {
+  return [
+    `M ${formatVectorNumber(x - radius)} ${formatVectorNumber(y)} L ${formatVectorNumber(x + radius)} ${formatVectorNumber(y)}`,
+    `M ${formatVectorNumber(x)} ${formatVectorNumber(y - radius)} L ${formatVectorNumber(x)} ${formatVectorNumber(y + radius)}`,
   ].join(' ')
 }
 

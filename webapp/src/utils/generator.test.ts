@@ -37,12 +37,18 @@ const printBedSettings: PrintBedSettings = {
 const defaultLineartSettings: LineartSettings = {
   detail: 100,
   threshold: 160,
+  thresholdAuto: true,
   targetColor: '#000000',
   despeckle: 24,
   strokeWidth: 0.4,
   smoothing: 36,
   invert: false,
   mirror: false,
+  autoOptimize: true,
+  protectFineDetail: true,
+  uploadPreprocess: true,
+  bezierFitting: true,
+  bezierStrength: 45,
 }
 
 describe('generator exports', () => {

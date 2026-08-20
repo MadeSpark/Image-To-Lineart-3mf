@@ -1,4 +1,4 @@
-export type PreviewMode = '原图' | '线稿' | '底板预览' | '分层预览' | '3D预览'
+export type PreviewMode = '原图' | '线稿' | 'DXF预览' | '底板预览' | '分层预览' | '3D预览'
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
 export type RectangleSizeMode = 'ratio' | 'manual'
 export type SourceKind = 'image' | 'dxf'
@@ -47,12 +47,18 @@ export interface BatchSourceItem {
 export interface LineartSettings {
   detail: number
   threshold: number
+  thresholdAuto: boolean
   targetColor: string
   despeckle: number
   strokeWidth: number
   smoothing: number
   invert: boolean
   mirror: boolean
+  autoOptimize: boolean
+  protectFineDetail: boolean
+  uploadPreprocess: boolean
+  bezierFitting: boolean
+  bezierStrength: number
 }
 
 export interface BaseplateSettings {

@@ -17,17 +17,23 @@ const FILIGREE_STORAGE_KEY = 'lineart-baseplate-generator-settings-filigree'
 const SEAL_STORAGE_KEY = 'lineart-baseplate-generator-settings-seal'
 const SHARED_STORAGE_KEY = 'lineart-baseplate-generator-settings-shared'
 const DEFAULT_PREVIEW_MODE: PreviewMode = '分层预览'
-const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览', '3D预览']
+const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板预览', '分层预览', '3D预览']
 
 export const defaultLineartSettings: LineartSettings = {
   detail: 100,
   threshold: 160,
+  thresholdAuto: true,
   targetColor: '#000000',
   despeckle: 24,
   strokeWidth: 0,
   smoothing: 36,
   invert: false,
   mirror: false,
+  autoOptimize: true,
+  protectFineDetail: true,
+  uploadPreprocess: true,
+  bezierFitting: true,
+  bezierStrength: 45,
 }
 
 export const defaultSealLineartSettings: LineartSettings = {

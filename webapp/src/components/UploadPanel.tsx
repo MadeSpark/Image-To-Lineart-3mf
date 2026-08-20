@@ -365,26 +365,99 @@ export function UploadPanel({
       <div className="rounded-[20px] bg-slate-50 p-4">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
           <SlidersHorizontal className="h-4 w-4" />
-          线稿处理参数
+          图像识别
         </div>
         <div className="mt-4 grid gap-4">
           <SliderRow
-            label="采样细节"
-            min={20}
-            max={100}
-            step={1}
-            value={settings.detail}
-            suffix=""
-            onChange={(value) => onUpdateSettings({ detail: value })}
-          />
-          <SliderRow
-            label="颜色容差"
+            label="识别灵敏度"
             min={0}
             max={160}
             step={1}
             value={settings.threshold}
             suffix=""
-            onChange={(value) => onUpdateSettings({ threshold: value })}
+            autoLabel={settings.thresholdAuto ? '自动' : undefined}
+            onToggleAuto={() => onUpdateSettings({ thresholdAuto: !settings.thresholdAuto })}
+            onChange={(value) => onUpdateSettings({ threshold: value, thresholdAuto: false })}
+          />
+          <SliderRow
+            label="线条平滑"
+            min={0}
+            max={72}
+            step={2}
+            value={settings.smoothing}
+            suffix=""
+            onChange={(value) => onUpdateSettings({ smoothing: value })}
+          />
+          <SliderRow
+            label="去除杂点"
+            min={0}
+            max={120}
+            step={2}
+            value={settings.despeckle}
+            suffix=""
+            disabled={despeckleLocked}
+            onChange={(value) => onUpdateSettings({ despeckle: value })}
+          />
+          {despeckleLocked && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
+              当前素材已使用画笔或橡皮擦修线，已自动关闭并锁定“去除杂点”，避免把手工修改冲掉。
+            </div>
+          )}
+          <SliderRow
+            label="模型分辨率（细节）"
+            min={0}
+            max={200}
+            step={1}
+            value={settings.detail}
+            suffix=" · 标准"
+            onChange={(value) => onUpdateSettings({ detail: value })}
+          />
+
+          {/* 开关行 */}
+          <SettingSwitch
+            label="自动识别优化"
+            description="导入图片时根据分辨率自动调参"
+            checked={settings.autoOptimize}
+            onChange={(value) => onUpdateSettings({ autoOptimize: value })}
+          />
+          <SettingSwitch
+            label="微细节保护"
+            description="保留 1-2px 细线，避免腐蚀消除"
+            checked={settings.protectFineDetail}
+            onChange={(value) => onUpdateSettings({ protectFineDetail: value })}
+          />
+          <SettingSwitch
+            label="上传图片预处理"
+            description="上传后自动根据分辨率应用默认参数"
+            checked={settings.uploadPreprocess}
+            onChange={(value) => onUpdateSettings({ uploadPreprocess: value })}
+          />
+          <SettingSwitch
+            label="贝塞尔曲线拟合"
+            description="用平滑曲线替换折线，输出结构更干净"
+            checked={settings.bezierFitting}
+            onChange={(value) => onUpdateSettings({ bezierFitting: value })}
+          />
+          {settings.bezierFitting && (
+            <SliderRow
+              label="曲线拟合强度"
+              min={0}
+              max={100}
+              step={5}
+              value={settings.bezierStrength}
+              suffix="%"
+              onChange={(value) => onUpdateSettings({ bezierStrength: value })}
+            />
+          )}
+
+          <SliderRow
+            label="线条加粗"
+            min={0}
+            max={4}
+            step={0.2}
+            value={settings.strokeWidth}
+            suffix=""
+            onChange={(value) => onUpdateSettings({ strokeWidth: value })}
           />
           <label className="space-y-1 text-[11px] text-slate-500">
             目标颜色
@@ -412,39 +485,6 @@ export function UploadPanel({
               />
             </div>
           </label>
-          <SliderRow
-            label="杂点清理"
-            min={0}
-            max={120}
-            step={2}
-            value={settings.despeckle}
-            suffix=""
-            disabled={despeckleLocked}
-            onChange={(value) => onUpdateSettings({ despeckle: value })}
-          />
-          {despeckleLocked && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-              当前素材已使用画笔或橡皮擦修线，已自动关闭并锁定“杂点清理”，避免把手工修改冲掉。
-            </div>
-          )}
-          <SliderRow
-            label="线条加粗"
-            min={0}
-            max={4}
-            step={0.2}
-            value={settings.strokeWidth}
-            suffix=""
-            onChange={(value) => onUpdateSettings({ strokeWidth: value })}
-          />
-          <SliderRow
-            label="线条平滑"
-            min={0}
-            max={72}
-            step={2}
-            value={settings.smoothing}
-            suffix=""
-            onChange={(value) => onUpdateSettings({ smoothing: value })}
-          />
           <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
             <span>反相线稿</span>
             <input
@@ -568,6 +608,8 @@ function SliderRow({
   value,
   suffix,
   disabled,
+  autoLabel,
+  onToggleAuto,
   onChange,
 }: {
   label: string
@@ -577,6 +619,8 @@ function SliderRow({
   value: number
   suffix: string
   disabled?: boolean
+  autoLabel?: string
+  onToggleAuto?: () => void
   onChange: (value: number) => void
 }) {
   const [draftValue, setDraftValue] = useState(value)
@@ -595,10 +639,21 @@ function SliderRow({
     <label className="block space-y-2">
       <div className="flex items-center justify-between text-xs text-slate-500">
         <span>{label}</span>
-        <span className="rounded-full bg-white px-2 py-1 font-medium text-slate-800">
-          {draftValue}
-          {suffix}
-        </span>
+        <div className="flex items-center gap-2">
+          {autoLabel && onToggleAuto && (
+            <button
+              type="button"
+              onClick={onToggleAuto}
+              className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100"
+            >
+              {autoLabel}
+            </button>
+          )}
+          <span className="rounded-full bg-white px-2 py-1 font-medium text-slate-800">
+            {draftValue}
+            {suffix}
+          </span>
+        </div>
       </div>
       <input
         type="range"
@@ -614,6 +669,45 @@ function SliderRow({
         onBlur={commitValue}
         className="h-2 w-full accent-[#0088ff] disabled:cursor-not-allowed disabled:opacity-45"
       />
+    </label>
+  )
+}
+
+function SettingSwitch({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string
+  description?: string
+  checked: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-slate-700">{label}</div>
+        {description && (
+          <div className="mt-1 text-[11px] leading-5 text-slate-500">{description}</div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        aria-pressed={checked}
+        className={`relative mt-0.5 inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full border transition ${
+          checked
+            ? 'border-[#0088ff] bg-[#0088ff]'
+            : 'border-slate-300 bg-slate-200'
+        }`}
+      >
+        <span
+          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition ${
+            checked ? 'translate-x-5' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
     </label>
   )
 }

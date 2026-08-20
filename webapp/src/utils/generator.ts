@@ -27,6 +27,53 @@ import {
 const DEFAULT_LINEART_MAX_MM = 40
 const MIN_EXPORTABLE_LINE_WIDTH_MM = 0.24
 const MIN_EXPORTABLE_SOLID_DIAMETER_MM = 0.9
+
+/**
+ * 依据图片原始分辨率 + 识别模式（线稿 / 照片）自动计算一套合理的线稿处理参数。
+ * 目标：用户换了不同分辨率的图片时，不必手动调整滑块即可得到预期结果。
+ *
+ * 规则设计原理：
+ *   - detail: 处理管线中 maxDimension = 480 + detail*12，即 detail=100 ≈ 1680px
+ *     高分辨率图片需要更高 detail 保留细节，低分辨率图片无需放大浪费算力。
+ *   - threshold (颜色容差): 线稿模式大部分内容是二值黑白，容差较小避免把白底当成黑线。
+ *     "自动"模式下按公式计算。
+ *   - despeckle (杂点清理): 与图像像素数成正相关。大图像素多，小的孤立黑点区域
+ *     对应的像素也多，需要提高清理阈值；小图反之。
+ *   - smoothing (线条平滑): 与 detail 同比例，detail 越高需要越多平滑抑制锯齿。
+ *   - strokeWidth (线条加粗): 高分辨率线稿通常线条本身就有足够像素，无需加粗；
+ *     低分辨率线稿需要适度加粗避免后续腐蚀把线吃掉。
+ */
+export function calculateAutoLineartParams(
+  image: { width: number; height: number },
+): Partial<LineartSettings> {
+  const maxDim = Math.max(image.width, image.height, 1)
+  const megapixels = (image.width * image.height) / 1_000_000
+
+  // detail: 基准 480px，映射到 0-200 范围；4K 图片需要 detail≈200。
+  const detailRaw = (Math.min(maxDim, 5000) - 480) / 12
+  const detail = Math.round(clamp(detailRaw, 0, 200))
+
+  // threshold: 线稿模式，大部分内容是二值黑白
+  // 低分辨率线稿需要较高 threshold 防止扫描噪声，高分辨率则较纯净
+  const threshold = Math.round(clamp(30 + megapixels * 2, 20, 60))
+
+  // despeckle: 以每百万像素 ~25 px 为基准
+  const despecklePx = 10 + megapixels * 25
+  const despeckle = Math.round(clamp(despecklePx, 0, 120))
+
+  // smoothing: 与 detail 线性相关
+  const smoothing = Math.round(clamp(12 + detail * 0.22, 0, 72))
+
+  // 注意：自动调参不再覆盖 strokeWidth，始终使用用户设定值（默认 0 = 原图粗细）
+  // 即使是低分辨率小图，也由用户自行决定是否加粗。
+
+  return {
+    detail,
+    threshold,
+    smoothing,
+    despeckle,
+  }
+}
 const MAX_EXPORTABLE_HOLE_DIAMETER_MM = 0.7
 
 interface ProcessArtworkInput {
@@ -203,10 +250,16 @@ export async function processArtwork({
     pixelsPerMm,
     paddingMm,
   )
+  // 0.005 mm² ≈ 直径 0.08 mm 的圆，只剔除完全退化的多边形或真正的像素噪点。
+  // 此前 0.3 mm² 会把瞳孔、嘴角、小发梢、小装饰点等小细节错误丢掉（
+  // Ø 0.6 mm 的眼睛只有 ~0.28 mm²），导致 SVG 预览正常但 3MF 切片里
+  // 这些位置变空（只剩底板填充线）。前面的 despeckle 已经清掉了小连通
+  // 域噪点，因此这里不需要再做激进过滤。
+  const MIN_LOOP_AREA_MM2 = 0.005
   const finalLineLoops = smoothLoops(
     traceMaskToLoops(lineMask.mask, lineMask.width, lineMask.height)
       .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
-      .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.3),
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2),
     lineartSettings.smoothing,
   )
 
@@ -1816,10 +1869,24 @@ async function buildImageLineart(
     toleranceSq,
     settings.invert,
   )
-  const bridgedMask = getAdaptivePreservedMask(targetMask, width, height)
-  const slimmedEdges = getAdaptiveLineMask(bridgedMask, width, height)
+  let bridgedMask
+  let slimmedEdges
+  if (settings.protectFineDetail) {
+    // 微细节保护：不做闭合/腐蚀等形态学操作，直接保留原始 mask。
+    bridgedMask = targetMask.slice()
+    slimmedEdges = bridgedMask
+  } else {
+    bridgedMask = getAdaptivePreservedMask(targetMask, width, height)
+    slimmedEdges = getAdaptiveLineMask(bridgedMask, width, height)
+  }
+  // 线条加粗：基于「原始线宽」叠加膨胀。
+  // 基准 = bridgedMask（保留原图实际线粗的掩码，不做骨架细化），
+  // strokeWidth=0 时直接输出基准 → 用户看到的就是原图粗细；
+  // strokeWidth>0 时对 bridgedMask 做膨胀，再并入 slimmedEdges 保留细枝末节。
   const strokeRadius = Math.max(0, Math.round(settings.strokeWidth * 0.75))
-  const widened = strokeRadius ? dilateMask(slimmedEdges, width, height, strokeRadius) : slimmedEdges
+  const widened = strokeRadius
+    ? orMasks(dilateMask(bridgedMask, width, height, strokeRadius), slimmedEdges, width, height)
+    : bridgedMask
   const fillRatio = getFilledPixelCount(widened) / Math.max(1, width * height)
   const despeckleStrength = fillRatio < 0.12
     ? Math.round(settings.despeckle * 0.3)
@@ -1827,11 +1894,14 @@ async function buildImageLineart(
       ? Math.round(settings.despeckle * 0.55)
       : settings.despeckle
   const cleaned = despeckleStrength ? removeSmallComponents(widened, width, height, despeckleStrength) : widened
-  const loops = smoothLoops(
-    traceMaskToLoops(cleaned, width, height)
-      .filter((loop) => Math.abs(loopArea(loop.points)) >= 3),
-    settings.smoothing,
-  )
+
+  // 基础平滑
+  const baseSmoothingVal = settings.smoothing
+  const rawLoops = traceMaskToLoops(cleaned, width, height)
+    .filter((loop) => Math.abs(loopArea(loop.points)) >= 3)
+  const loops = settings.bezierFitting
+    ? smoothLoopsWithBezier(rawLoops, baseSmoothingVal, settings.bezierStrength)
+    : smoothLoops(rawLoops, baseSmoothingVal)
   const scaled = scaleLoopsToMaxDimension(normalizeLoops(loops), DEFAULT_LINEART_MAX_MM)
 
   return {
@@ -2459,6 +2529,64 @@ function smoothLoops(loops: VectorLoop[], smoothing: number) {
         ...loop,
         points,
       }
+    })
+    .filter((loop) => loop.points.length >= 3)
+}
+
+/**
+ * 带贝塞尔强度的平滑管线：
+ * 在 smoothLoops 基础上，根据 bezierStrengthPercent（0-100）：
+ * - 先执行基础平滑（smoothLoops）
+ * - 对平滑后的轮廓，按强度线性增加一次「角点圆化 + 轻微简化」
+ * 因为实际输出 SVG / 切片器使用的仍是闭合折线多边形，所以无法真正的 cubic bezier
+ * 输出，而是用折线点密度模拟贝塞尔曲线平滑的观感。
+ */
+function smoothLoopsWithBezier(
+  loops: VectorLoop[],
+  smoothing: number,
+  bezierStrengthPercent: number,
+) {
+  const baseSmoothed = smoothLoops(loops, smoothing)
+  const strength = clamp(bezierStrengthPercent / 100, 0, 1)
+  if (strength <= 0) return baseSmoothed
+
+  // 贝塞尔强度控制：增加的额外平滑次数 + 额外简化容差
+  const extraBlend = 0.1 + strength * 0.35
+  const extraSimplifyTol = strength * 0.6
+  const extraPruneTol = 0.1 + strength * 0.5
+
+  return baseSmoothed
+    .map((loop) => {
+      const originalMetrics = measureLoopGeometry(loop.points)
+      const shapeGuard = getLoopShapeGuard(originalMetrics)
+      const isThinLineLoop = originalMetrics.minDimension <= 0.9 || originalMetrics.aspectRatio >= 5
+
+      let points = loop.points
+      // 再加一次强力环形平滑（模拟贝塞尔对硬拐角的软化）
+      points = preserveLoopShape(
+        points,
+        smoothRing(points, extraBlend),
+        originalMetrics,
+        shapeGuard,
+      )
+      // 额外的折线简化（减少点数，效果更接近光滑曲线）
+      if (extraSimplifyTol > 0) {
+        points = preserveLoopShape(
+          points,
+          simplifyClosedLoop(points, isThinLineLoop ? extraSimplifyTol * 0.2 : extraSimplifyTol),
+          originalMetrics,
+          shapeGuard,
+        )
+      }
+      // 额外的尖角修剪
+      points = preserveLoopShape(
+        points,
+        pruneWrinkles(points, extraPruneTol),
+        originalMetrics,
+        shapeGuard,
+      )
+      points = sanitizeLoop(points)
+      return { ...loop, points }
     })
     .filter((loop) => loop.points.length >= 3)
 }

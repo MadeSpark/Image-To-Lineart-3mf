@@ -1,9 +1,8 @@
-import { ChevronDown, Download, Eye, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Upload, Settings2, MoreHorizontal } from 'lucide-react'
+import { ChevronDown, Download, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Upload, Settings2, MoreHorizontal, Eye } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { BaseTemplate, PreviewMode, WorkMode } from '@/types/generator'
+import type { BaseTemplate, WorkMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 
-const modes: PreviewMode[] = ['原图', '线稿', '底板预览', '分层预览', '3D预览']
 const templates: Array<{ value: BaseTemplate; label: string }> = [
   { value: 'outline', label: '轮廓' },
   { value: 'rectangle', label: '矩形' },
@@ -13,10 +12,8 @@ const templates: Array<{ value: BaseTemplate; label: string }> = [
 interface WorkbenchHeaderProps {
   appVersion: string
   workMode: WorkMode
-  previewMode: PreviewMode
   template: BaseTemplate
   onWorkModeChange: (mode: WorkMode) => void
-  onPreviewModeChange: (mode: PreviewMode) => void
   onTemplateChange: (template: BaseTemplate) => void
   onExportSettings: () => void
   onImportSettings: (file: File) => void
@@ -35,10 +32,8 @@ const workModes: Array<{ value: WorkMode; label: string; icon: typeof Layers3 }>
 export function WorkbenchHeader({
   appVersion,
   workMode,
-  previewMode,
   template,
   onWorkModeChange,
-  onPreviewModeChange,
   onTemplateChange,
   onExportSettings,
   onImportSettings,
@@ -124,24 +119,6 @@ export function WorkbenchHeader({
                 )}
               >
                 {item.label}
-              </button>
-            ))}
-          </SegmentedGroup>
-
-          <SegmentedGroup>
-            {modes.map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => onPreviewModeChange(mode)}
-                className={cn(
-                  'rounded-[12px] px-2.5 py-1.5 text-xs font-medium transition',
-                  previewMode === mode
-                    ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
-                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-800',
-                )}
-              >
-                {mode}
               </button>
             ))}
           </SegmentedGroup>

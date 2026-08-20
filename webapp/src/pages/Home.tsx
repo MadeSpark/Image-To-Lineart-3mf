@@ -28,6 +28,7 @@ import {
   buildSeal3mfPackage,
   rebuildArtworkWithLineLoops,
   buildLoopDxf,
+  calculateAutoLineartParams,
   decodeGifFrames,
   fileToImportedLineart,
   fileToSourceImage,
@@ -265,6 +266,32 @@ export default function Home() {
     )
   }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings, workMode])
 
+  // 当开启自动优化、或用户切换到另一张图片时，若图片尺寸与当前
+  // 参数差距明显，就自动重新计算。避免用户手动调过的参数被反复覆盖：
+  // 只有当图片实际分辨率与当前参数明显不匹配时才自动刷新（>15% 差异）。
+  useEffect(() => {
+    if (!lineartSettings.autoOptimize || !sourceImage) return
+
+    const maxDim = Math.max(sourceImage.width, sourceImage.height)
+    const expectedDetail = Math.round(Math.max(0, Math.min(200, (Math.min(maxDim, 5000) - 480) / 12)))
+    const detailMismatch = Math.abs(expectedDetail - lineartSettings.detail) > 15
+    if (!detailMismatch) return
+
+    const autoParams = calculateAutoLineartParams(sourceImage)
+    if (lineartSettings.thresholdAuto) {
+      updateLineartSettings({ ...autoParams })
+    } else {
+      const { threshold, ...rest } = autoParams
+      updateLineartSettings({ ...rest })
+    }
+  }, [
+    lineartSettings.autoOptimize,
+    lineartSettings.thresholdAuto,
+    lineartSettings.detail,
+    sourceImage,
+    updateLineartSettings,
+  ])
+
   useEffect(() => {
     setLineartOverrides((current) => {
       const activeIds = new Set(entries.map((entry) => entry.id))
@@ -408,6 +435,20 @@ export default function Home() {
 
         const source = await fileToSourceImage(file)
         nextEntries.push(createImageEntry(source))
+      }
+
+      if (nextEntries.length && lineartSettings.autoOptimize) {
+        const firstImage = nextEntries[0].sourceImage
+        if (firstImage) {
+          const autoParams = calculateAutoLineartParams(firstImage)
+          if (lineartSettings.thresholdAuto) {
+            updateLineartSettings({ ...autoParams })
+          } else {
+            // 手动锁定 threshold 时，不覆盖用户的 threshold 设置
+            const { threshold, ...rest } = autoParams
+            updateLineartSettings({ ...rest })
+          }
+        }
       }
 
       addEntries(nextEntries)
@@ -770,10 +811,8 @@ export default function Home() {
         <WorkbenchHeader
           appVersion={__APP_VERSION__}
           workMode={workMode}
-          previewMode={previewMode}
           template={baseplateSettings.template}
           onWorkModeChange={setWorkMode}
-          onPreviewModeChange={setPreviewMode}
           onTemplateChange={(template) => updateBaseplateSettings({ template })}
           onExportSettings={handleExportSettings}
           onImportSettings={(file) => void handleImportSettings(file)}
@@ -828,6 +867,7 @@ export default function Home() {
               sourceImage={sourceImage}
               artwork={effectiveArtwork}
               previewMode={previewMode}
+              onPreviewModeChange={setPreviewMode}
               processing={processing || exporting}
               error={error}
               targetColor={lineartSettings.targetColor}
