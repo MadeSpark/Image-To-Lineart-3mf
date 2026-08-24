@@ -2,7 +2,7 @@ export type PreviewMode = '原图' | '线稿' | 'DXF预览' | '底板预览' | '
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
 export type RectangleSizeMode = 'ratio' | 'manual'
 export type SourceKind = 'image' | 'dxf'
-export type WorkMode = 'filigree' | 'seal'
+export type WorkMode = 'filigree' | 'seal' | 'light-relief'
 export type CarvingMode = 'intaglio' | 'relief'
 
 export interface SourceImage {
@@ -50,7 +50,10 @@ export interface LineartSettings {
   thresholdAuto: boolean
   targetColor: string
   despeckle: number
-  strokeWidth: number
+  /** 加粗描边（膨胀），默认0；与 shrinkStrokeMm 互斥 */
+  expandStrokeMm: number
+  /** 缩小描边（腐蚀），默认0；与 expandStrokeMm 互斥；不低于 minLineWidthMm */
+  shrinkStrokeMm: number
   smoothing: number
   invert: boolean
   mirror: boolean
@@ -78,6 +81,8 @@ export interface ExtrudeSettings {
   baseThicknessMm: number
   lineThicknessMm: number
   lineHeightMm: number
+  /** 最小线宽，缩小描边的下限；可由3MF导入读取 */
+  minLineWidthMm: number
 }
 
 export interface PrintBedSettings {
@@ -103,6 +108,38 @@ export interface SealSettings {
   engravingHeightDiffMm: number
 }
 
+/**
+ * 光映浮雕 B 面模式。
+ * - 'auto': 自动检测——图片同时含黑(0,0,0)和红(255,0,0)时走 lineart，否则走 halftone（默认）
+ * - 'lineart': 同图双色提取，A 面提取黑(0,0,0)、B 面提取红(255,0,0)，B 面按线稿阴刻处理
+ * - 'halftone': 透光浮雕，用户单独导入 B 面图片；将图像转为灰度，按深浅打印厚度，
+ *   深色区域厚（透光后呈黑线条），浅色区域薄
+ */
+export type LightReliefBFaceMode = 'auto' | 'lineart' | 'halftone'
+
+/**
+ * 光映浮雕模式参数。
+ * - totalHeightMm: 模型总厚度
+ * - faceAZMm / faceAHeightMm: A 面（耗材1/黑）线稿所在 Z 区间 [faceAZMm, faceAZMm+faceAHeightMm]
+ * - faceBZMm / faceBHeightMm: B 面 Z 区间 [faceBZMm, faceBZMm+faceBHeightMm]
+ *   - lineart 模式：该区间内 B 面线稿区域为空（不打印）
+ *   - halftone 模式：该区间内按灰度打印厚度，灰度值映射到 [0, faceBHeightMm]
+ * - bFaceMode: B 面处理模式（默认 'auto'）
+ * - bFaceExposure: halftone 模式下的曝光值（0~200，100 为原始亮度），用于调整图片过暗时的厚度分布
+ * - bFaceInvert: halftone 模式下是否反转灰度（深色变浅、浅色变深）
+ * 其余区域一律用耗材2（白）填充。
+ */
+export interface LightReliefSettings {
+  totalHeightMm: number
+  faceAZMm: number
+  faceAHeightMm: number
+  faceBZMm: number
+  faceBHeightMm: number
+  bFaceMode: LightReliefBFaceMode
+  bFaceExposure: number
+  bFaceInvert: boolean
+}
+
 export interface ThreeMfTemplateProfile {
   sourceName: string
   applicationName: string
@@ -118,6 +155,10 @@ export interface ThreeMfTemplateProfile {
   bedType: string
   compatiblePrinters: string[]
   filamentSlotCount: number
+  /** 打印层高（mm），从 project_settings.config 的 layer_height 读取 */
+  layerHeightMm: number | null
+  /** 挤出线宽（mm），从 project_settings.config 的 line_width 读取 */
+  lineWidthMm: number | null
 }
 
 export interface PreviewAssets {
@@ -145,6 +186,17 @@ export interface ProcessedArtwork {
   lineLoops: VectorLoop[]
   baseLoops: VectorLoop[]
   strokeLoops?: VectorLoop[]
+  /** 光映浮雕模式下的 B 面线稿（A 面仍存于 lineLoops）。lineart 模式使用。 */
+  lineLoopsB?: VectorLoop[]
+  /**
+   * 光映浮雕 halftone 模式下的 B 面灰度高度图。
+   * - width/height: 像素尺寸（与 boardWidthMm/boardHeightMm + pixelsPerMm 对应）
+   * - data: 每个像素的归一化高度 [0,1]，1 = 最厚（最深色），0 = 最薄（最浅色）
+   * - 已应用曝光和反相处理，导出时映射到 [faceBZMm, faceBZMm+faceBHeightMm]
+   */
+  bFaceHeightMap?: { width: number; height: number; data: Float32Array }
+  /** 光映浮雕模式下实际生效的 B 面模式（auto 检测后的结果）。非光映模式为 undefined。 */
+  effectiveBFaceMode?: 'lineart' | 'halftone'
   boardWidthMm: number
   boardHeightMm: number
   pixelsPerMm: number

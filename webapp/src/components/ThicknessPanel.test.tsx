@@ -12,6 +12,7 @@ describe('ThicknessPanel', () => {
           baseThicknessMm: 0.2,
           lineThicknessMm: 0.2,
           lineHeightMm: 0.2,
+          minLineWidthMm: 0.24,
         }}
         onUpdateSettings={onUpdateSettings}
       />,

@@ -3,13 +3,14 @@ import type {
   BaseplateSettings,
   ExtrudeSettings,
   ImportedLineart,
+  LightReliefSettings,
   LineartSettings,
   ProcessedArtwork,
   SealSettings,
   SourceImage,
   WorkMode,
 } from '@/types/generator'
-import { processArtwork } from '@/utils/generator'
+import { processArtwork, processLightReliefArtwork } from '@/utils/generator'
 
 interface ProcessorState {
   artwork: ProcessedArtwork | null
@@ -25,6 +26,8 @@ export function useArtworkProcessor(
   extrudeSettings: ExtrudeSettings,
   sealSettings?: SealSettings,
   workMode?: WorkMode,
+  lightReliefSettings?: LightReliefSettings,
+  sourceImageB?: SourceImage | null,
 ) {
   const [state, setState] = useState<ProcessorState>({
     artwork: null,
@@ -34,29 +37,34 @@ export function useArtworkProcessor(
   const inputRef = useRef({
     sourceImage,
     importedLineart,
+    sourceImageB,
     lineartSettings,
     baseplateSettings,
     extrudeSettings,
     sealSettings,
     workMode,
+    lightReliefSettings,
   })
 
   useEffect(() => {
     inputRef.current = {
       sourceImage,
       importedLineart,
+      sourceImageB,
       lineartSettings,
       baseplateSettings,
       extrudeSettings,
       sealSettings,
       workMode,
+      lightReliefSettings,
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sealSettings, workMode])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings])
 
   useEffect(() => {
     let mounted = true
 
-    if (!sourceImage && !importedLineart) {
+    const hasSourceA = !!(sourceImage || importedLineart)
+    if (!hasSourceA) {
       setState({
         artwork: null,
         processing: false,
@@ -73,7 +81,18 @@ export function useArtworkProcessor(
       error: null,
     }))
 
-    processArtwork(inputRef.current)
+    const promise = workMode === 'light-relief' && lightReliefSettings
+      ? processLightReliefArtwork({
+          sourceImage: inputRef.current.sourceImage,
+          importedLineart: inputRef.current.importedLineart,
+          sourceImageB: inputRef.current.sourceImageB ?? null,
+          lineartSettings: inputRef.current.lineartSettings,
+          baseplateSettings: inputRef.current.baseplateSettings,
+          lightReliefSettings: inputRef.current.lightReliefSettings!,
+        })
+      : processArtwork(inputRef.current)
+
+    promise
       .then((artwork) => {
         if (!mounted) return
         setState({
@@ -94,7 +113,7 @@ export function useArtworkProcessor(
     return () => {
       mounted = false
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sealSettings, workMode])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings])
 
   return {
     artwork: state.artwork,

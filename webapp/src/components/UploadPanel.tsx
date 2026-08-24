@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Copy, FileCode2, ImagePlus, LayoutGrid, LoaderCircle, SlidersHorizontal, Sparkles, Trash2, Upload, CheckCircle2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { BatchSourceItem, ImportedLineart, LineartSettings, SourceImage, SourceKind } from '@/types/generator'
+import type { BatchSourceItem, ImportedLineart, LineartSettings, SourceImage, SourceKind, WorkMode } from '@/types/generator'
 import { AI_PROMPT_TEXT, autoCropFilmstrip, copyTextToClipboard, dataUrlToFile, downloadDataUrl, mergeImagesToFilmstrip } from '@/utils/filmstrip'
 
 interface UploadPanelProps {
@@ -12,7 +12,7 @@ interface UploadPanelProps {
   settings: LineartSettings
   despeckleLocked?: boolean
   processing: boolean
-  workMode: 'filigree' | 'seal'
+  workMode: WorkMode
   onUploadImages: (files: File[]) => void
   onImportDxf: (file: File) => void
   onUpdateSettings: (patch: Partial<LineartSettings>) => void
@@ -311,28 +311,32 @@ export function UploadPanel({
 
         {aiAssistOpen && (
           <div className="mt-3 grid gap-2">
-            <button
-              type="button"
-              onClick={() => void handleMergeOutput()}
-              disabled={!imageEntries.length || aiAction !== 'idle'}
-              className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {aiAction === 'merging'
-                ? <LoaderCircle className="h-4 w-4 animate-spin" />
-                : <LayoutGrid className="h-4 w-4" />}
-              合并输出胶卷图
-            </button>
-            <button
-              type="button"
-              onClick={() => filmstripInputRef.current?.click()}
-              disabled={aiAction !== 'idle'}
-              className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {aiAction === 'importing'
-                ? <LoaderCircle className="h-4 w-4 animate-spin" />
-                : <Upload className="h-4 w-4" />}
-              导入胶卷图（自动裁剪）
-            </button>
+            {workMode !== 'light-relief' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleMergeOutput()}
+                  disabled={!imageEntries.length || aiAction !== 'idle'}
+                  className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {aiAction === 'merging'
+                    ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                    : <LayoutGrid className="h-4 w-4" />}
+                  合并输出胶卷图
+                </button>
+                <button
+                  type="button"
+                  onClick={() => filmstripInputRef.current?.click()}
+                  disabled={aiAction !== 'idle'}
+                  className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-sky-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {aiAction === 'importing'
+                    ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                    : <Upload className="h-4 w-4" />}
+                  导入胶卷图（自动裁剪）
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => void handleCopyPrompt()}
@@ -341,9 +345,11 @@ export function UploadPanel({
               <Copy className="h-4 w-4" />
               {copyStatus === 'copied' ? '已复制 AI 提示词' : '复制 AI 提示词'}
             </button>
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500">
-              合并输出：将素材列表中的图片按每行 5 张拼成胶卷图（最多 5×5），超出另存一张。把胶卷图交给 AI 处理后，用“导入胶卷图”自动裁剪回单张并导入。
-            </div>
+            {workMode !== 'light-relief' && (
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-[11px] leading-5 text-slate-500">
+                合并输出：将素材列表中的图片按每行 5 张拼成胶卷图（最多 5×5），超出另存一张。把胶卷图交给 AI 处理后，用“导入胶卷图”自动裁剪回单张并导入。
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -365,7 +371,7 @@ export function UploadPanel({
       <div className="rounded-[20px] bg-slate-50 p-4">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
           <SlidersHorizontal className="h-4 w-4" />
-          图像识别
+          {workMode === 'light-relief' ? 'A 面（图像识别）' : '图像识别'}
         </div>
         <div className="mt-4 grid gap-4">
           <SliderRow
@@ -451,14 +457,28 @@ export function UploadPanel({
           )}
 
           <SliderRow
-            label="线条加粗"
+            label="加粗描边"
             min={0}
-            max={4}
-            step={0.2}
-            value={settings.strokeWidth}
-            suffix=""
-            onChange={(value) => onUpdateSettings({ strokeWidth: value })}
+            max={2}
+            step={0.05}
+            value={settings.expandStrokeMm}
+            suffix="mm"
+            disabled={settings.shrinkStrokeMm > 0}
+            onChange={(value) => onUpdateSettings(value > 0 ? { expandStrokeMm: value, shrinkStrokeMm: 0 } : { expandStrokeMm: value })}
           />
+          <SliderRow
+            label="缩小描边"
+            min={0}
+            max={2}
+            step={0.05}
+            value={settings.shrinkStrokeMm}
+            suffix="mm"
+            disabled={settings.expandStrokeMm > 0}
+            onChange={(value) => onUpdateSettings(value > 0 ? { shrinkStrokeMm: value, expandStrokeMm: 0 } : { shrinkStrokeMm: value })}
+          />
+          <p className="text-[11px] leading-relaxed text-slate-400">
+            缩小描边受「最小线宽」限制，过度缩小不会低于打印线宽下限；二者互斥，调整其中一项会自动将另一项归零。
+          </p>
           <label className="space-y-1 text-[11px] text-slate-500">
             目标颜色
             <div className="grid grid-cols-[auto_1fr] items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3">

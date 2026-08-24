@@ -20,6 +20,8 @@ describe('threeMfProfile utilities', () => {
         print_compatible_printers: ['Bambu Lab A1 0.4 nozzle'],
         filament_colour: ['#FFFFFF', '#000000', '#FF0000'],
         printable_area: ['0x0', '300x0', '300x180', '0x180'],
+        layer_height: '0.2',
+        line_width: '0.42',
       })),
       'Metadata/slice_info.config': strToU8('<config><header /></config>'),
       'Metadata/filament_sequence.json': strToU8('{"plate_1":{"sequence":[]}}'),
@@ -38,6 +40,8 @@ describe('threeMfProfile utilities', () => {
     expect(profile.bedType).toBe('Textured PEI Plate')
     expect(profile.compatiblePrinters).toEqual(['Bambu Lab A1 0.4 nozzle'])
     expect(profile.filamentSlotCount).toBe(3)
+    expect(profile.layerHeightMm).toBe(0.2)
+    expect(profile.lineWidthMm).toBe(0.42)
   })
 
   it('writes colors and printable area back into project settings', () => {

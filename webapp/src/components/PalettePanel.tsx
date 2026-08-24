@@ -142,7 +142,7 @@ export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, on
           label="安全边距"
           suffix="mm"
           value={settings.marginMm}
-          min={1}
+          min={0}
           max={20}
           step={0.5}
           disabled={settings.template === 'outline'}

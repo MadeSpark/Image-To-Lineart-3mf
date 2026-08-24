@@ -3,6 +3,7 @@ import type {
   BaseplateSettings,
   ExtrudeSettings,
   ImportedLineart,
+  LightReliefSettings,
   LineartSettings,
   NumberingSettings,
   PrintBedSettings,
@@ -15,6 +16,7 @@ import type {
 
 const FILIGREE_STORAGE_KEY = 'lineart-baseplate-generator-settings-filigree'
 const SEAL_STORAGE_KEY = 'lineart-baseplate-generator-settings-seal'
+const LIGHT_RELIEF_STORAGE_KEY = 'lineart-baseplate-generator-settings-light-relief'
 const SHARED_STORAGE_KEY = 'lineart-baseplate-generator-settings-shared'
 const DEFAULT_PREVIEW_MODE: PreviewMode = '分层预览'
 const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板预览', '分层预览', '3D预览']
@@ -25,7 +27,8 @@ export const defaultLineartSettings: LineartSettings = {
   thresholdAuto: true,
   targetColor: '#000000',
   despeckle: 24,
-  strokeWidth: 0,
+  expandStrokeMm: 0,
+  shrinkStrokeMm: 0,
   smoothing: 36,
   invert: false,
   mirror: false,
@@ -67,10 +70,26 @@ export const defaultSealBaseplateSettings: BaseplateSettings = {
   baseColor: '#f3f6fb',
 }
 
+// 光映浮雕：矩形画板，支持比例/长宽两种模式（参考掐丝模式）。
+export const defaultLightReliefBaseplateSettings: BaseplateSettings = {
+  template: 'rectangle',
+  expandMm: 2,
+  widthMm: 50,
+  heightMm: 50,
+  rectangleSizeMode: 'ratio',
+  rectangleScalePercent: 100,
+  diameterMm: 50,
+  marginMm: 4,
+  // 耗材1=黑（A 面线稿），耗材2=白（背景）。沿用 lineColor/baseColor，导出时槽位互换。
+  lineColor: '#111111',
+  baseColor: '#f3f6fb',
+}
+
 export const defaultExtrudeSettings: ExtrudeSettings = {
   baseThicknessMm: 0.2,
   lineThicknessMm: 0.2,
   lineHeightMm: 0.2,
+  minLineWidthMm: 0.24,
 }
 
 export const defaultPrintBedSettings: PrintBedSettings = {
@@ -96,6 +115,20 @@ export const defaultSealSettings: SealSettings = {
   engravingHeightDiffMm: 0.5,
 }
 
+// 默认：总高1mm，A面[0,0.4]，B面[0.6,0.8]。
+// bFaceMode 默认 lineart（同图双色提取），无红色时自动回退 halftone。
+// halftone 模式下 B 面高度默认 1mm（透光浮雕需要足够厚度呈现深浅层次）。
+export const defaultLightReliefSettings: LightReliefSettings = {
+  totalHeightMm: 1,
+  faceAZMm: 0,
+  faceAHeightMm: 0.4,
+  faceBZMm: 0.6,
+  faceBHeightMm: 0.2,
+  bFaceMode: 'auto',
+  bFaceExposure: 100,
+  bFaceInvert: false,
+}
+
 interface FiligreeModeSettings {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
@@ -109,6 +142,12 @@ interface SealModeSettings {
   sealSettings: SealSettings
 }
 
+interface LightReliefModeSettings {
+  lineartSettings: LineartSettings
+  baseplateSettings: BaseplateSettings
+  lightReliefSettings: LightReliefSettings
+}
+
 interface SharedSettings {
   printBedSettings: PrintBedSettings
   customThreeMfProfile: ThreeMfTemplateProfile | null
@@ -118,16 +157,20 @@ interface GeneratorState {
   workMode: WorkMode
   sourceImage: SourceImage | null
   importedLineart: ImportedLineart | null
+  /** 光映浮雕 halftone 模式下 B 面独立图片源（lineart 模式忽略） */
+  sourceImageB: SourceImage | null
   previewMode: PreviewMode
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   numberingSettings: NumberingSettings
   sealSettings: SealSettings
+  lightReliefSettings: LightReliefSettings
   printBedSettings: PrintBedSettings
   customThreeMfProfile: ThreeMfTemplateProfile | null
   setSourceImage: (sourceImage: SourceImage | null) => void
   setImportedLineart: (importedLineart: ImportedLineart | null) => void
+  setSourceImageB: (sourceImageB: SourceImage | null) => void
   setPreviewMode: (mode: PreviewMode) => void
   setWorkMode: (mode: WorkMode) => void
   updateLineartSettings: (patch: Partial<LineartSettings>) => void
@@ -136,6 +179,7 @@ interface GeneratorState {
   updatePrintBedSettings: (patch: Partial<PrintBedSettings>) => void
   updateNumberingSettings: (patch: Partial<NumberingSettings>) => void
   updateSealSettings: (patch: Partial<SealSettings>) => void
+  updateLightReliefSettings: (patch: Partial<LightReliefSettings>) => void
   setCustomThreeMfProfile: (profile: ThreeMfTemplateProfile | null) => void
   applyImportedSettings: (settings: GeneratorSettingsPatch) => void
   resetAllSettings: (defaultBedPatch?: Partial<PrintBedSettings>) => void
@@ -148,6 +192,7 @@ export interface PersistedGeneratorSettings {
   printBedSettings: PrintBedSettings
   numberingSettings?: NumberingSettings
   sealSettings?: SealSettings
+  lightReliefSettings?: LightReliefSettings
   customThreeMfProfile?: ThreeMfTemplateProfile | null
   workMode?: WorkMode
 }
@@ -164,6 +209,7 @@ export interface GeneratorSettingsPatch {
   printBedSettings?: Partial<PrintBedSettings>
   numberingSettings?: Partial<NumberingSettings>
   sealSettings?: Partial<SealSettings>
+  lightReliefSettings?: Partial<LightReliefSettings>
   customThreeMfProfile?: ThreeMfTemplateProfile | null
   workMode?: WorkMode
 }
@@ -186,6 +232,46 @@ function normalizeSealSettings(parsed: Partial<SealModeSettings>): SealModeSetti
     lineartSettings: { ...defaultSealLineartSettings, ...parsed.lineartSettings },
     baseplateSettings: { ...defaultSealBaseplateSettings, ...parsed.baseplateSettings },
     sealSettings: { ...defaultSealSettings, ...parsed.sealSettings },
+  }
+}
+
+/** 统一归一化光映浮雕参数：限制硬上限，并保证 A/B 面 (Z + height) 不超过总高度。 */
+function sanitizeLightReliefSettings(settings: LightReliefSettings): LightReliefSettings {
+  let s = { ...settings }
+  if (typeof s.totalHeightMm === 'number') {
+    s.totalHeightMm = Math.max(0.2, Math.min(20, s.totalHeightMm))
+  }
+  if (typeof s.faceBHeightMm === 'number') {
+    s.faceBHeightMm = Math.max(0.1, Math.min(10, s.faceBHeightMm))
+  }
+  if (typeof s.faceAHeightMm === 'number' && s.faceAHeightMm < 0.1) {
+    s.faceAHeightMm = 0.1
+  }
+  if (typeof s.faceAZMm === 'number' && s.faceAZMm < 0) s.faceAZMm = 0
+  if (typeof s.faceBZMm === 'number' && s.faceBZMm < 0) s.faceBZMm = 0
+  const aTop = s.faceAZMm + s.faceAHeightMm
+  if (aTop > s.totalHeightMm) {
+    s = { ...s, faceAZMm: Math.max(0, s.totalHeightMm - s.faceAHeightMm) }
+  }
+  const bTop = s.faceBZMm + s.faceBHeightMm
+  if (bTop > s.totalHeightMm) {
+    s = { ...s, faceBZMm: Math.max(0, s.totalHeightMm - s.faceBHeightMm) }
+  }
+  if (typeof s.bFaceExposure === 'number') {
+    s.bFaceExposure = Math.max(0, Math.min(500, s.bFaceExposure))
+  }
+  return s
+}
+
+function normalizeLightReliefSettings(parsed: Partial<LightReliefModeSettings>): LightReliefModeSettings {
+  const mergedSettings = sanitizeLightReliefSettings({
+    ...defaultLightReliefSettings,
+    ...parsed.lightReliefSettings,
+  })
+  return {
+    lineartSettings: { ...defaultLineartSettings, ...parsed.lineartSettings },
+    baseplateSettings: { ...defaultLightReliefBaseplateSettings, ...parsed.baseplateSettings },
+    lightReliefSettings: mergedSettings,
   }
 }
 
@@ -223,6 +309,10 @@ function normalizePersistedSettings(parsed: GeneratorSettingsPatch) {
       ...defaultSealSettings,
       ...parsed.sealSettings,
     },
+    lightReliefSettings: sanitizeLightReliefSettings({
+      ...defaultLightReliefSettings,
+      ...parsed.lightReliefSettings,
+    }),
     customThreeMfProfile: parsed.customThreeMfProfile ?? null,
     workMode: parsed.workMode ?? 'filigree',
   }
@@ -236,6 +326,7 @@ export function buildPersistedSettingsSnapshot(settings: PersistedGeneratorSetti
     printBedSettings: settings.printBedSettings,
     numberingSettings: settings.numberingSettings ?? defaultNumberingSettings,
     sealSettings: settings.sealSettings ?? defaultSealSettings,
+    lightReliefSettings: settings.lightReliefSettings ?? defaultLightReliefSettings,
     customThreeMfProfile: settings.customThreeMfProfile ?? null,
     workMode: settings.workMode ?? 'filigree',
   }
@@ -279,6 +370,15 @@ function saveSealSettings(settings: SealModeSettings) {
   saveJson(SEAL_STORAGE_KEY, settings)
 }
 
+function loadLightReliefSettings(): LightReliefModeSettings {
+  const stored = loadJson<Partial<LightReliefModeSettings>>(LIGHT_RELIEF_STORAGE_KEY)
+  return normalizeLightReliefSettings(stored ?? {})
+}
+
+function saveLightReliefSettings(settings: LightReliefModeSettings) {
+  saveJson(LIGHT_RELIEF_STORAGE_KEY, settings)
+}
+
 function loadSharedSettings(): SharedSettings {
   const stored = loadJson<Partial<SharedSettings>>(SHARED_STORAGE_KEY)
   return normalizeSharedSettings(stored ?? {})
@@ -296,11 +396,17 @@ function saveCurrentModeSettings(state: GeneratorState) {
       extrudeSettings: state.extrudeSettings,
       numberingSettings: state.numberingSettings,
     })
-  } else {
+  } else if (state.workMode === 'seal') {
     saveSealSettings({
       lineartSettings: state.lineartSettings,
       baseplateSettings: state.baseplateSettings,
       sealSettings: state.sealSettings,
+    })
+  } else {
+    saveLightReliefSettings({
+      lineartSettings: state.lineartSettings,
+      baseplateSettings: state.baseplateSettings,
+      lightReliefSettings: state.lightReliefSettings,
     })
   }
   saveSharedSettings({
@@ -311,23 +417,27 @@ function saveCurrentModeSettings(state: GeneratorState) {
 
 const storedFiligree = loadFiligreeSettings()
 const storedSeal = loadSealSettings()
+const storedLightRelief = loadLightReliefSettings()
 const storedShared = loadSharedSettings()
 
 export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   workMode: 'filigree',
   sourceImage: null,
   importedLineart: null,
+  sourceImageB: null,
   previewMode: DEFAULT_PREVIEW_MODE,
   lineartSettings: storedFiligree.lineartSettings,
   baseplateSettings: storedFiligree.baseplateSettings,
   extrudeSettings: storedFiligree.extrudeSettings,
   numberingSettings: storedFiligree.numberingSettings,
   sealSettings: storedSeal.sealSettings,
+  lightReliefSettings: storedLightRelief.lightReliefSettings,
   printBedSettings: storedShared.printBedSettings,
   customThreeMfProfile: storedShared.customThreeMfProfile,
 
   setSourceImage: (sourceImage) => set({ sourceImage, importedLineart: null }),
   setImportedLineart: (importedLineart) => set({ importedLineart, sourceImage: null }),
+  setSourceImageB: (sourceImageB) => set({ sourceImageB }),
   setPreviewMode: (previewMode) => set({ previewMode }),
 
   setWorkMode: (mode) => {
@@ -344,13 +454,21 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         extrudeSettings: filigree.extrudeSettings,
         numberingSettings: filigree.numberingSettings,
       })
-    } else {
+    } else if (mode === 'seal') {
       const seal = loadSealSettings()
       set({
         workMode: 'seal',
         lineartSettings: seal.lineartSettings,
         baseplateSettings: seal.baseplateSettings,
         sealSettings: seal.sealSettings,
+      })
+    } else {
+      const lightRelief = loadLightReliefSettings()
+      set({
+        workMode: 'light-relief',
+        lineartSettings: lightRelief.lineartSettings,
+        baseplateSettings: lightRelief.baseplateSettings,
+        lightReliefSettings: lightRelief.lightReliefSettings,
       })
     }
   },
@@ -399,6 +517,16 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     return { sealSettings }
   }),
 
+  updateLightReliefSettings: (patch) => set((state) => {
+    const lightReliefSettings = sanitizeLightReliefSettings({
+      ...state.lightReliefSettings,
+      ...patch,
+    })
+    const next = { ...state, lightReliefSettings }
+    saveCurrentModeSettings(next)
+    return { lightReliefSettings }
+  }),
+
   setCustomThreeMfProfile: (customThreeMfProfile) => {
     saveSharedSettings({
       printBedSettings: get().printBedSettings,
@@ -429,24 +557,43 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         numberingSettings: normalized.numberingSettings,
         printBedSettings: normalized.printBedSettings,
         sealSettings: state.sealSettings,
+        lightReliefSettings: state.lightReliefSettings,
         customThreeMfProfile: normalized.customThreeMfProfile,
       }))
-    } else {
+    } else if (targetMode === 'seal') {
       const seal = loadSealSettings()
       saveSealSettings({
         lineartSettings: normalized.lineartSettings,
         baseplateSettings: normalized.baseplateSettings,
         sealSettings: normalized.sealSettings,
       })
-      set({
+      set((state) => ({
         workMode: 'seal',
-        previewMode: isPreviewMode(settings.previewMode) ? settings.previewMode : get().previewMode,
+        previewMode: isPreviewMode(settings.previewMode) ? settings.previewMode : state.previewMode,
         lineartSettings: normalized.lineartSettings,
         baseplateSettings: normalized.baseplateSettings,
         printBedSettings: normalized.printBedSettings,
         sealSettings: normalized.sealSettings,
+        lightReliefSettings: state.lightReliefSettings,
         customThreeMfProfile: normalized.customThreeMfProfile,
+      }))
+    } else {
+      const lightRelief = loadLightReliefSettings()
+      saveLightReliefSettings({
+        lineartSettings: normalized.lineartSettings,
+        baseplateSettings: normalized.baseplateSettings,
+        lightReliefSettings: normalized.lightReliefSettings,
       })
+      set((state) => ({
+        workMode: 'light-relief',
+        previewMode: isPreviewMode(settings.previewMode) ? settings.previewMode : state.previewMode,
+        lineartSettings: normalized.lineartSettings,
+        baseplateSettings: normalized.baseplateSettings,
+        printBedSettings: normalized.printBedSettings,
+        sealSettings: state.sealSettings,
+        lightReliefSettings: normalized.lightReliefSettings,
+        customThreeMfProfile: normalized.customThreeMfProfile,
+      }))
     }
     saveSharedSettings({
       printBedSettings: normalized.printBedSettings,
@@ -480,7 +627,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         printBedSettings,
         customThreeMfProfile: null,
       })
-    } else {
+    } else if (currentMode === 'seal') {
       saveSealSettings({
         lineartSettings: defaultSealLineartSettings,
         baseplateSettings: defaultSealBaseplateSettings,
@@ -492,6 +639,21 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: defaultSealLineartSettings,
         baseplateSettings: defaultSealBaseplateSettings,
         sealSettings: defaultSealSettings,
+        printBedSettings,
+        customThreeMfProfile: null,
+      })
+    } else {
+      saveLightReliefSettings({
+        lineartSettings: defaultLineartSettings,
+        baseplateSettings: defaultLightReliefBaseplateSettings,
+        lightReliefSettings: defaultLightReliefSettings,
+      })
+      set({
+        workMode: 'light-relief',
+        previewMode: DEFAULT_PREVIEW_MODE,
+        lineartSettings: defaultLineartSettings,
+        baseplateSettings: defaultLightReliefBaseplateSettings,
+        lightReliefSettings: defaultLightReliefSettings,
         printBedSettings,
         customThreeMfProfile: null,
       })

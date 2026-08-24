@@ -1,20 +1,12 @@
-import { ChevronDown, Download, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Upload, Settings2, MoreHorizontal, Eye } from 'lucide-react'
+import { ChevronDown, Download, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Sun, Upload, Settings2, MoreHorizontal, Eye } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { BaseTemplate, WorkMode } from '@/types/generator'
+import type { WorkMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
-
-const templates: Array<{ value: BaseTemplate; label: string }> = [
-  { value: 'outline', label: '轮廓' },
-  { value: 'rectangle', label: '矩形' },
-  { value: 'circle', label: '圆形' },
-]
 
 interface WorkbenchHeaderProps {
   appVersion: string
   workMode: WorkMode
-  template: BaseTemplate
   onWorkModeChange: (mode: WorkMode) => void
-  onTemplateChange: (template: BaseTemplate) => void
   onExportSettings: () => void
   onImportSettings: (file: File) => void
   onExportJson: () => void
@@ -27,14 +19,13 @@ interface WorkbenchHeaderProps {
 const workModes: Array<{ value: WorkMode; label: string; icon: typeof Layers3 }> = [
   { value: 'filigree', label: '掐丝', icon: Layers3 },
   { value: 'seal', label: '印章', icon: Stamp },
+  { value: 'light-relief', label: '光映浮雕', icon: Sun },
 ]
 
 export function WorkbenchHeader({
   appVersion,
   workMode,
-  template,
   onWorkModeChange,
-  onTemplateChange,
   onExportSettings,
   onImportSettings,
   onExportJson,
@@ -103,24 +94,6 @@ export function WorkbenchHeader({
                 </button>
               )
             })}
-          </SegmentedGroup>
-
-          <SegmentedGroup>
-            {templates.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => onTemplateChange(item.value)}
-                className={cn(
-                  'rounded-[12px] px-2.5 py-1.5 text-xs font-medium transition',
-                  template === item.value
-                    ? 'bg-white text-slate-950 shadow-[0_4px_12px_rgba(15,23,42,0.08)]'
-                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-800',
-                )}
-              >
-                {item.label}
-              </button>
-            ))}
           </SegmentedGroup>
 
           <div className="mx-1 hidden h-6 w-px bg-slate-200 lg:block" />

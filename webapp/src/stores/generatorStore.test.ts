@@ -11,7 +11,7 @@ describe('useGeneratorStore persistence', () => {
 
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(160)
-    expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(0)
+    expect(useGeneratorStore.getState().lineartSettings.expandStrokeMm).toBe(0)
     expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('ratio')
     expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(100)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
@@ -25,14 +25,14 @@ describe('useGeneratorStore persistence', () => {
     useGeneratorStore.getState().updateLineartSettings({
       detail: 88,
       threshold: 120,
-      strokeWidth: 1.2,
+      expandStrokeMm: 1.2,
     })
 
     const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings') ?? '{}')
 
     expect(saved.lineartSettings.detail).toBe(88)
     expect(saved.lineartSettings.threshold).toBe(120)
-    expect(saved.lineartSettings.strokeWidth).toBe(1.2)
+    expect(saved.lineartSettings.expandStrokeMm).toBe(1.2)
   })
 
   it('loads saved settings on a fresh store import', async () => {
@@ -40,7 +40,7 @@ describe('useGeneratorStore persistence', () => {
       lineartSettings: {
         detail: 72,
         threshold: 90,
-        strokeWidth: 2.4,
+        expandStrokeMm: 2.4,
         targetColor: '#123456',
       },
       baseplateSettings: {
@@ -72,6 +72,8 @@ describe('useGeneratorStore persistence', () => {
         bedType: 'Textured PEI Plate',
         compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
         filamentSlotCount: 2,
+        layerHeightMm: null,
+        lineWidthMm: null,
       },
     }))
 
@@ -79,7 +81,7 @@ describe('useGeneratorStore persistence', () => {
 
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(72)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(90)
-    expect(useGeneratorStore.getState().lineartSettings.strokeWidth).toBe(2.4)
+    expect(useGeneratorStore.getState().lineartSettings.expandStrokeMm).toBe(2.4)
     expect(useGeneratorStore.getState().lineartSettings.targetColor).toBe('#123456')
     expect(useGeneratorStore.getState().baseplateSettings.template).toBe('rectangle')
     expect(useGeneratorStore.getState().baseplateSettings.widthMm).toBe(66)
@@ -112,6 +114,8 @@ describe('useGeneratorStore persistence', () => {
       bedType: 'Textured PEI Plate',
       compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
       filamentSlotCount: 2,
+      layerHeightMm: null,
+      lineWidthMm: null,
     })
     useGeneratorStore.getState().updatePrintBedSettings({
       widthMm: 300,

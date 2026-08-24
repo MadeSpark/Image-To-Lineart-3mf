@@ -73,6 +73,8 @@ export function createFallbackThreeMfTemplateProfile(): ThreeMfTemplateProfile {
     bedType: 'Textured PEI Plate',
     compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
     filamentSlotCount: 2,
+    layerHeightMm: null,
+    lineWidthMm: null,
   }
 }
 
@@ -87,6 +89,8 @@ export function parseThreeMfTemplateArchive(bytes: Uint8Array, sourceName: strin
     ? strFromU8(files['Metadata/filament_sequence.json'])
     : null
   const { widthMm, depthMm } = extractPrintableArea(projectSettings)
+  const layerHeightMm = readNumber(projectSettings.layer_height)
+  const lineWidthMm = readNumber(projectSettings.line_width)
 
   return {
     sourceName,
@@ -103,6 +107,8 @@ export function parseThreeMfTemplateArchive(bytes: Uint8Array, sourceName: strin
     bedType: readString(projectSettings.curr_bed_type, ''),
     compatiblePrinters: getStringArray(projectSettings.print_compatible_printers),
     filamentSlotCount: getMaxSlotCount(projectSettings),
+    layerHeightMm,
+    lineWidthMm,
   }
 }
 
@@ -110,14 +116,26 @@ export function buildThreeMfProjectSettingsConfig(
   profile: ThreeMfTemplateProfile | null | undefined,
   baseplateSettings: BaseplateSettings,
   printBedSettings: PrintBedSettings,
+  /**
+   * 耗材颜色槽位顺序。
+   * - 'base-line'（默认，掐丝/印章）：耗材1=背景(baseColor/白)，耗材2=线稿(lineColor/黑)
+   * - 'line-base'（光映浮雕）：耗材1=线稿(lineColor/黑)，耗材2=背景(baseColor/白)
+   * 光映浮雕要求耗材1=黑、耗材2=白，与掐丝相反，需在此互换 project_settings 的 filament_colour。
+   */
+  filamentColorOrder: 'base-line' | 'line-base' = 'base-line',
 ) {
   const merged = JSON.parse(JSON.stringify(
     (profile ?? createFallbackThreeMfTemplateProfile()).projectSettings,
   )) as Record<string, unknown>
   const requiredSlots = Math.max(2, getMaxSlotCount(merged))
   const colorSlots = padStringArray(getStringArray(merged.filament_colour), requiredSlots, '#FFFFFF')
-  colorSlots[0] = baseplateSettings.baseColor.toUpperCase()
-  colorSlots[1] = baseplateSettings.lineColor.toUpperCase()
+  if (filamentColorOrder === 'line-base') {
+    colorSlots[0] = baseplateSettings.lineColor.toUpperCase()
+    colorSlots[1] = baseplateSettings.baseColor.toUpperCase()
+  } else {
+    colorSlots[0] = baseplateSettings.baseColor.toUpperCase()
+    colorSlots[1] = baseplateSettings.lineColor.toUpperCase()
+  }
   merged.filament_colour = colorSlots
   merged.filament_multi_colour = [...colorSlots]
   merged.extruder_colour = [...colorSlots]
@@ -179,6 +197,12 @@ export function summarizeThreeMfTemplateProfile(profile: ThreeMfTemplateProfile)
     summary.push(`热床类型：${profile.bedType}`)
   }
   summary.push(`耗材槽位：${profile.filamentSlotCount}`)
+  if (profile.layerHeightMm != null) {
+    summary.push(`层高：${profile.layerHeightMm} mm`)
+  }
+  if (profile.lineWidthMm != null) {
+    summary.push(`线宽：${profile.lineWidthMm} mm`)
+  }
   summary.push(`切片器：${profile.applicationName}`)
   if (profile.compatiblePrinters.length) {
     summary.push(`兼容打印机：${profile.compatiblePrinters.join(', ')}`)
@@ -247,6 +271,11 @@ function readString(value: unknown, fallback: string) {
   return typeof value === 'string' && value.trim()
     ? value
     : fallback
+}
+
+function readNumber(value: unknown): number | null {
+  const num = typeof value === 'string' ? parseFloat(value) : typeof value === 'number' ? value : NaN
+  return Number.isFinite(num) && num > 0 ? num : null
 }
 
 function safeParseJson(text: string) {

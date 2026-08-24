@@ -1,7 +1,7 @@
 import { Box, LoaderCircle } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { BaseplateSettings, ExtrudeSettings, ProcessedArtwork, SealSettings, WorkMode } from '@/types/generator'
+import type { BaseplateSettings, ExtrudeSettings, LightReliefSettings, LineartSettings, ProcessedArtwork, SealSettings, WorkMode } from '@/types/generator'
 
 let modelViewerImportPromise: Promise<unknown> | null = null
 const previewModelCache = new WeakMap<ProcessedArtwork, Map<string, string>>()
@@ -23,8 +23,12 @@ function getPreviewCacheKey(
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
   sealSettings?: SealSettings,
+  lightReliefSettings?: LightReliefSettings,
   workMode?: WorkMode,
+  lineartSettings?: LineartSettings,
 ) {
+  const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
+  const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
   if (workMode === 'seal' && sealSettings) {
     return [
       baseplateSettings.baseColor,
@@ -35,6 +39,24 @@ function getPreviewCacheKey(
       sealSettings.carvingMode,
       sealSettings.strokeEnabled,
       sealSettings.strokeWidthMm,
+      expandStrokeMm,
+      shrinkStrokeMm,
+      extrudeSettings.minLineWidthMm,
+    ].join('|')
+  }
+  if (workMode === 'light-relief' && lightReliefSettings) {
+    return [
+      baseplateSettings.baseColor,
+      baseplateSettings.lineColor,
+      workMode,
+      lightReliefSettings.totalHeightMm,
+      lightReliefSettings.faceAZMm,
+      lightReliefSettings.faceAHeightMm,
+      lightReliefSettings.faceBZMm,
+      lightReliefSettings.faceBHeightMm,
+      expandStrokeMm,
+      shrinkStrokeMm,
+      extrudeSettings.minLineWidthMm,
     ].join('|')
   }
   return [
@@ -43,6 +65,9 @@ function getPreviewCacheKey(
     extrudeSettings.baseThicknessMm,
     extrudeSettings.lineHeightMm,
     extrudeSettings.lineThicknessMm,
+    expandStrokeMm,
+    shrinkStrokeMm,
+    extrudeSettings.minLineWidthMm,
   ].join('|')
 }
 
@@ -72,7 +97,9 @@ interface ThreeDModelViewerProps {
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   sealSettings?: SealSettings
+  lightReliefSettings?: LightReliefSettings
   workMode?: WorkMode
+  lineartSettings?: LineartSettings
 }
 
 export function ThreeDModelViewer({
@@ -80,19 +107,24 @@ export function ThreeDModelViewer({
   baseplateSettings,
   extrudeSettings,
   sealSettings,
+  lightReliefSettings,
   workMode = 'filigree',
+  lineartSettings,
 }: ThreeDModelViewerProps) {
   const [modelUrl, setModelUrl] = useState<string | null>(null)
   const [isBuilding, setIsBuilding] = useState(false)
   const [buildError, setBuildError] = useState<string | null>(null)
   const isSealMode = workMode === 'seal' && sealSettings
+  const isLightReliefMode = workMode === 'light-relief' && lightReliefSettings
   const modelHeight = isSealMode
     ? (sealSettings!.sealHeightMm + sealSettings!.engravingHeightDiffMm)
-    : (extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm)
+    : isLightReliefMode
+      ? lightReliefSettings!.totalHeightMm
+      : (extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm)
   const cameraTarget = `0m ${Math.max(modelHeight * 0.5, 0.25)}m 0m`
 
   useEffect(() => {
-    const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings, sealSettings, workMode)
+    const cacheKey = getPreviewCacheKey(baseplateSettings, extrudeSettings, sealSettings, lightReliefSettings, workMode, lineartSettings)
     const cachedUrl = getCachedPreviewModelUrl(artwork, cacheKey)
     if (cachedUrl) {
       // #region debug-point A:viewer-cache-hit
@@ -158,6 +190,7 @@ export function ThreeDModelViewer({
         artwork: {
           baseLoops: artwork.baseLoops,
           lineLoops: artwork.lineLoops,
+          lineLoopsB: artwork.lineLoopsB,
           strokeLoops: artwork.strokeLoops,
           boardWidthMm: artwork.boardWidthMm,
           boardHeightMm: artwork.boardHeightMm,
@@ -166,7 +199,9 @@ export function ThreeDModelViewer({
         baseplateSettings,
         extrudeSettings,
         sealSettings,
+        lightReliefSettings,
         workMode,
+        lineartSettings,
       })
     }
 
@@ -177,7 +212,7 @@ export function ThreeDModelViewer({
       setIsBuilding(false)
       worker.terminate()
     }
-  }, [artwork, baseplateSettings, extrudeSettings, sealSettings, workMode])
+  }, [artwork, baseplateSettings, extrudeSettings, sealSettings, lightReliefSettings, workMode, lineartSettings])
 
   return (
     <div className="relative h-full w-full">

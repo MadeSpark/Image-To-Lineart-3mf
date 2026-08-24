@@ -15,7 +15,8 @@ describe('Home', () => {
         thresholdAuto: true,
         targetColor: '#000000',
         despeckle: 24,
-        strokeWidth: 0,
+        expandStrokeMm: 0,
+        shrinkStrokeMm: 0,
         smoothing: 36,
         invert: false,
         mirror: false,
@@ -41,6 +42,7 @@ describe('Home', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       printBedSettings: {
         widthMm: 256,

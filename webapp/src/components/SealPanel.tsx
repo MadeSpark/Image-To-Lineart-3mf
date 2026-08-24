@@ -83,15 +83,15 @@ export function SealPanel({ settings, onUpdateSettings }: SealPanelProps) {
       <div className="grid gap-4 rounded-[20px] bg-slate-50 p-4">
         <SliderField
           label="印章高度"
-          min={5}
+          min={0.1}
           max={80}
-          step={0.5}
+          step={0.1}
           value={settings.sealHeightMm}
           onChange={(value) => onUpdateSettings({ sealHeightMm: value })}
         />
         <SliderField
           label="刻印高度差"
-          min={0.2}
+          min={0.1}
           max={5}
           step={0.1}
           value={settings.engravingHeightDiffMm}

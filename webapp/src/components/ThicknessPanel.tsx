@@ -14,6 +14,7 @@ function SliderField({
   step,
   value,
   onChange,
+  disabled,
 }: {
   label: string
   min: number
@@ -21,6 +22,7 @@ function SliderField({
   step: number
   value: number
   onChange: (value: number) => void
+  disabled?: boolean
 }) {
   const [draftValue, setDraftValue] = useState(value)
 
@@ -35,7 +37,7 @@ function SliderField({
   }
 
   return (
-    <label className="block space-y-2">
+    <label className={`block space-y-2 ${disabled ? 'opacity-40' : ''}`}>
       <div className="flex items-center justify-between text-xs text-slate-500">
         <span>{label}</span>
         <span className="rounded-full bg-white px-2 py-1 font-medium text-slate-800">{draftValue.toFixed(2)} mm</span>
@@ -46,6 +48,7 @@ function SliderField({
         max={max}
         step={step}
         value={draftValue}
+        disabled={disabled}
         onChange={(event) => setDraftValue(Number(event.target.value))}
         onMouseUp={commitValue}
         onTouchEnd={commitValue}
@@ -92,6 +95,17 @@ export function ThicknessPanel({ settings, onUpdateSettings }: ThicknessPanelPro
         />
       </div>
 
+      <div className="grid gap-4 rounded-[20px] bg-slate-50 p-4">
+        <SliderField
+          label="最小线宽"
+          min={0.1}
+          max={0.6}
+          step={0.02}
+          value={settings.minLineWidthMm}
+          onChange={(value) => onUpdateSettings({ minLineWidthMm: value })}
+        />
+      </div>
+
       <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-4">
         <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
           <Ruler className="h-4 w-4" />
@@ -99,6 +113,7 @@ export function ThicknessPanel({ settings, onUpdateSettings }: ThicknessPanelPro
         </div>
         <p className="mt-2 text-xs leading-6 text-slate-500">
           线稿高度表示线稿层从模型底部开始的高度位置，线稿厚度表示这层本身再向上长多少。当前模型最高点会按 `线稿高度 + 线稿厚度` 计算。
+          最小线宽是缩小描边的下限，可在左侧图像识别区域调整加粗/缩小描边。
         </p>
       </div>
     </section>

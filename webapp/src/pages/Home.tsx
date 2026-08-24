@@ -5,6 +5,7 @@ import { BatchExportDialog } from '@/components/BatchExportDialog'
 import { ExportPanel } from '@/components/ExportPanel'
 import { GifFramePicker } from '@/components/GifFramePicker'
 import { NumberingPanel } from '@/components/NumberingPanel'
+import { LightReliefPanel } from '@/components/LightReliefPanel'
 import { PalettePanel } from '@/components/PalettePanel'
 import { PreviewCanvas } from '@/components/PreviewCanvas'
 import { PrintBedPanel } from '@/components/PrintBedPanel'
@@ -18,12 +19,13 @@ import {
   useGeneratorStore,
 } from '@/stores/generatorStore'
 import type { GeneratorSettingsPatch, GeneratorSettingsPayload } from '@/stores/generatorStore'
-import type { BatchSourceItem, GifFrameSource, PreviewMode, ProcessedArtwork, SealSettings as SealSettingsType, VectorLoop, VectorPoint, WorkMode } from '@/types/generator'
+import type { BatchSourceItem, ExtrudeSettings, GifFrameSource, LightReliefSettings, PreviewMode, ProcessedArtwork, SealSettings as SealSettingsType, VectorLoop, VectorPoint, WorkMode } from '@/types/generator'
 import {
   applyLineartStrokeEdit,
   applyNumberingToArtwork,
   build3mfPackage,
   buildCombined3mfPackage,
+  buildLightRelief3mfPackage,
   buildLineartSvgDocument,
   buildSeal3mfPackage,
   rebuildArtworkWithLineLoops,
@@ -34,6 +36,7 @@ import {
   fileToSourceImage,
   getExportBaseName,
   processArtwork,
+  processLightReliefArtwork,
 } from '@/utils/generator'
 import {
   createFallbackThreeMfTemplateProfile,
@@ -60,6 +63,7 @@ export default function Home() {
   const {
     sourceImage,
     importedLineart,
+    sourceImageB,
     previewMode,
     lineartSettings,
     baseplateSettings,
@@ -67,10 +71,12 @@ export default function Home() {
     printBedSettings,
     numberingSettings,
     sealSettings,
+    lightReliefSettings,
     workMode,
     customThreeMfProfile,
     setSourceImage,
     setImportedLineart,
+    setSourceImageB,
     setPreviewMode,
     updateLineartSettings,
     updateBaseplateSettings,
@@ -78,6 +84,7 @@ export default function Home() {
     updatePrintBedSettings,
     updateNumberingSettings,
     updateSealSettings,
+    updateLightReliefSettings,
     setCustomThreeMfProfile,
     setWorkMode,
     applyImportedSettings,
@@ -106,6 +113,7 @@ export default function Home() {
   const [lineartOverrides, setLineartOverrides] = useState<Record<string, VectorLoop[]>>({})
   const [visitorCount, setVisitorCount] = useState<number | null>(null)
   const visitorCountRecordedRef = useRef(false)
+  const prevEffectiveBFaceModeRef = useRef<'lineart' | 'halftone' | undefined>(undefined)
 
   useEffect(() => {
     // React 18 StrictMode 在开发环境会双调用 useEffect，用 ref 保证每次组件实例只计数一次。
@@ -246,7 +254,29 @@ export default function Home() {
     extrudeSettings,
     workMode === 'seal' ? sealSettings : undefined,
     workMode,
+    workMode === 'light-relief' ? lightReliefSettings : undefined,
+    sourceImageB,
   )
+
+  // 光映浮雕：从处理结果获取实际生效的 B 面模式（auto 检测后可能为 halftone）
+  const effectiveBFaceMode = artwork?.effectiveBFaceMode
+
+  // 进入 halftone 模式时自动将 B 面高度设为 1mm（透光浮雕需要足够厚度呈现深浅层次）
+  useEffect(() => {
+    const prev = prevEffectiveBFaceModeRef.current
+    prevEffectiveBFaceModeRef.current = effectiveBFaceMode
+
+    if (effectiveBFaceMode !== 'halftone' || prev === 'halftone') return
+    if (lightReliefSettings.faceBHeightMm >= 1) return
+
+    const patch: Partial<LightReliefSettings> = { faceBHeightMm: 1 }
+    const minTotal = lightReliefSettings.faceBZMm + 1
+    if (lightReliefSettings.totalHeightMm < minTotal) {
+      patch.totalHeightMm = minTotal
+    }
+    updateLightReliefSettings(patch)
+  }, [effectiveBFaceMode, lightReliefSettings.faceBHeightMm, lightReliefSettings.faceBZMm, lightReliefSettings.totalHeightMm, updateLightReliefSettings])
+
   const activeLineartOverride = activeEntryId ? lineartOverrides[activeEntryId] : undefined
   const baseArtwork = useMemo(
     () => (artwork && activeLineartOverride
@@ -469,6 +499,19 @@ export default function Home() {
     }
   }
 
+  const handleUploadImageB = async (file: File) => {
+    try {
+      const source = await fileToSourceImage(file)
+      setSourceImageB(source)
+    } catch (caughtError) {
+      window.alert(normalizeErrorMessage(caughtError, 'B 面图片导入失败'))
+    }
+  }
+
+  const handleClearSourceB = () => {
+    setSourceImageB(null)
+  }
+
   const handleRemoveEntry = (entryId: string) => {
     setEntries((current) => current.filter((entry) => entry.id !== entryId))
     setLineartOverrides((current) => {
@@ -495,15 +538,24 @@ export default function Home() {
 
       const processedArtwork = entry.id === activeEntry?.id && artwork
         ? artwork
-        : await processArtwork({
-            sourceImage: entry.sourceImage,
-            importedLineart: entry.importedLineart,
-            lineartSettings,
-            baseplateSettings,
-            extrudeSettings,
-            sealSettings: workMode === 'seal' ? sealSettings : undefined,
-            workMode,
-          })
+        : workMode === 'light-relief'
+          ? await processLightReliefArtwork({
+              sourceImage: entry.sourceImage,
+              importedLineart: entry.importedLineart,
+              sourceImageB,
+              lineartSettings,
+              baseplateSettings,
+              lightReliefSettings,
+            })
+          : await processArtwork({
+              sourceImage: entry.sourceImage,
+              importedLineart: entry.importedLineart,
+              lineartSettings,
+              baseplateSettings,
+              extrudeSettings,
+              sealSettings: workMode === 'seal' ? sealSettings : undefined,
+              workMode,
+            })
 
       const lineartOverride = lineartOverrides[entry.id]
       let finalArtwork = lineartOverride
@@ -540,7 +592,7 @@ export default function Home() {
 
       setExportProgress({ current: entries.length, total: entries.length, label: '正在生成 3MF 文件...' })
 
-      if (mode === 'single') {
+      if (mode === 'single' && workMode !== 'light-relief') {
         const bytes = buildCombined3mfPackage(
           processedItems.map((item) => ({
             id: item.entry.id,
@@ -549,39 +601,66 @@ export default function Home() {
           })),
           baseplateSettings,
           workMode === 'seal' ? {
+            ...extrudeSettings,
             baseThicknessMm: sealSettings.sealHeightMm,
             lineHeightMm: sealSettings.engravingHeightDiffMm,
             lineThicknessMm: 0.4,
           } : extrudeSettings,
           printBedSettings,
           effectiveThreeMfProfile,
+          lineartSettings,
         )
         triggerBlobDownload('lineart-baseplate-batch.3mf', new Blob([bytes], { type: 'model/3mf' }))
         return
       }
 
       const archiveEntries: Record<string, Uint8Array> = {}
-      processedItems.forEach((item, index) => {
+      for (const [index, item] of processedItems.entries()) {
         const filename = `${buildNumberedBaseName(item.entry, index)}.3mf`
+        const onProgress = async (label: string) => {
+          setExportProgress({
+            current: index, total: processedItems.length,
+            label: `(${index + 1}/${processedItems.length}) ${label}`,
+          })
+          await new Promise(r => setTimeout(r, 0))
+        }
         archiveEntries[filename] = workMode === 'seal'
-          ? buildSeal3mfPackage(
+          ? await buildSeal3mfPackage(
               item.artwork,
               baseplateSettings,
               sealSettings,
               printBedSettings,
               effectiveThreeMfProfile,
+              onProgress,
+              extrudeSettings,
+              lineartSettings,
             )
-          : build3mfPackage(
+          : workMode === 'light-relief'
+            ? await buildLightRelief3mfPackage(
+              item.artwork,
+              baseplateSettings,
+              lightReliefSettings,
+              printBedSettings,
+              effectiveThreeMfProfile,
+              onProgress,
+              extrudeSettings,
+              lineartSettings,
+            )
+            : await build3mfPackage(
               item.artwork,
               baseplateSettings,
               extrudeSettings,
               printBedSettings,
               effectiveThreeMfProfile,
+              onProgress,
+              lineartSettings,
             )
-      })
+      }
+      setExportProgress({ current: processedItems.length, total: processedItems.length, label: '正在压缩 ZIP 文件...' })
+      await new Promise(r => setTimeout(r, 50))
       triggerBlobDownload(
         'lineart-baseplate-3mf-batch.zip',
-        new Blob([zipSync(archiveEntries, { level: 0 })], { type: 'application/zip' }),
+        new Blob([zipSync(archiveEntries, { level: 6 })], { type: 'application/zip' }),
       )
     } catch (caughtError) {
       window.alert(normalizeErrorMessage(caughtError, '批量导出 3MF 失败'))
@@ -643,28 +722,59 @@ export default function Home() {
     }
 
     setExporting(true)
+    setExportProgressOpen(true)
+    setExportProgress({ current: 0, total: 0, label: '准备导出 3MF...' })
+    // 让 ProgressDialog 先渲染，避免"卡死"错觉
+    await new Promise(r => setTimeout(r, 80))
+
     try {
+      // onProgress 必须异步 yield，让 React 有机会渲染进度文本
+      const onProgress = async (label: string) => {
+        setExportProgress({ current: 0, total: 0, label })
+        await new Promise(r => setTimeout(r, 0))
+      }
       const bytes = workMode === 'seal'
-        ? buildSeal3mfPackage(
+        ? await buildSeal3mfPackage(
             effectiveArtwork,
             baseplateSettings,
             sealSettings,
             printBedSettings,
             effectiveThreeMfProfile,
+            onProgress,
+            extrudeSettings,
+            lineartSettings,
           )
-        : build3mfPackage(
+        : workMode === 'light-relief'
+          ? await buildLightRelief3mfPackage(
+            effectiveArtwork,
+            baseplateSettings,
+            lightReliefSettings,
+            printBedSettings,
+            effectiveThreeMfProfile,
+            onProgress,
+            extrudeSettings,
+            lineartSettings,
+          )
+          : await build3mfPackage(
             effectiveArtwork,
             baseplateSettings,
             extrudeSettings,
             printBedSettings,
             effectiveThreeMfProfile,
+            onProgress,
+            lineartSettings,
           )
+      setExportProgress({ current: 1, total: 1, label: '正在保存文件...' })
+      await new Promise(r => setTimeout(r, 50))
       triggerBlobDownload(
         `${exportBaseName}.3mf`,
         new Blob([bytes], { type: 'model/3mf' }),
       )
+    } catch (caughtError) {
+      window.alert(normalizeErrorMessage(caughtError, '导出 3MF 失败'))
     } finally {
       setExporting(false)
+      setTimeout(() => setExportProgressOpen(false), 500)
     }
   }
 
@@ -693,6 +803,17 @@ export default function Home() {
         widthMm: profile.printBedWidthMm,
         depthMm: profile.printBedDepthMm,
       })
+      // 从 3MF 读取层高和线宽，应用到挤出设置
+      const patch: Partial<ExtrudeSettings> = {}
+      if (profile.layerHeightMm != null) {
+        patch.lineThicknessMm = profile.layerHeightMm
+      }
+      if (profile.lineWidthMm != null) {
+        patch.minLineWidthMm = profile.lineWidthMm
+      }
+      if (Object.keys(patch).length > 0) {
+        updateExtrudeSettings(patch)
+      }
       window.alert([
         `已导入 3MF 打印配置：${profile.sourceName}`,
         '',
@@ -811,9 +932,7 @@ export default function Home() {
         <WorkbenchHeader
           appVersion={__APP_VERSION__}
           workMode={workMode}
-          template={baseplateSettings.template}
           onWorkModeChange={setWorkMode}
-          onTemplateChange={(template) => updateBaseplateSettings({ template })}
           onExportSettings={handleExportSettings}
           onImportSettings={(file) => void handleImportSettings(file)}
           onExportJson={() => void exportBatchFiles('json')}
@@ -874,7 +993,9 @@ export default function Home() {
               baseplateSettings={baseplateSettings}
               extrudeSettings={extrudeSettings}
               sealSettings={sealSettings}
+              lightReliefSettings={lightReliefSettings}
               workMode={workMode}
+              lineartSettings={lineartSettings}
               hasLineartEdits={despeckleLocked}
               viewResetKey={activeEntry?.id ?? 'empty'}
               onApplyLineartStroke={handleApplyLineartStroke}
@@ -894,6 +1015,15 @@ export default function Home() {
               <SealPanel
                 settings={sealSettings}
                 onUpdateSettings={updateSealSettings}
+              />
+            ) : workMode === 'light-relief' ? (
+              <LightReliefPanel
+                settings={lightReliefSettings}
+                sourceImageB={sourceImageB}
+                effectiveBFaceMode={effectiveBFaceMode}
+                onUpdateSettings={updateLightReliefSettings}
+                onUploadImageB={(file) => void handleUploadImageB(file)}
+                onClearSourceB={handleClearSourceB}
               />
             ) : (
               <ThicknessPanel
@@ -1068,18 +1198,25 @@ function ProgressDialog({
   total: number
 }) {
   const percent = total > 0 ? Math.round((current / total) * 100) : 0
+  const indeterminate = total === 0
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.2)]">
         <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
         <p className="mt-2 text-sm text-slate-600">{label}</p>
-        <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-          <div
-            className="h-full rounded-full bg-[#0088ff] transition-all duration-200"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <p className="mt-2 text-right text-xs text-slate-500">{current} / {total}</p>
+        {indeterminate ? (
+          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full w-1/3 animate-[indeterminate_1.2s_ease-in-out_infinite] rounded-full bg-[#0088ff]" style={{ animationName: 'indeterminate-slide', animationDuration: '1.2s', animationIterationCount: 'infinite', animationTimingFunction: 'ease-in-out' }} />
+          </div>
+        ) : (
+          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-[#0088ff] transition-all duration-200"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        )}
+        {!indeterminate && <p className="mt-2 text-right text-xs text-slate-500">{current} / {total}</p>}
       </div>
     </div>
   )

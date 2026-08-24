@@ -4,12 +4,14 @@ import type {
   ExtrudeSettings,
   GifFrameSource,
   ImportedLineart,
+  LightReliefSettings,
   LineartSettings,
   NumberingSettings,
   PrintBedLayout,
   PrintBedPlacementItem,
   PrintBedSettings,
   ProcessedArtwork,
+  PreviewAssets,
   SealSettings,
   SourceImage,
   ThreeMfTemplateProfile,
@@ -40,7 +42,7 @@ const MIN_EXPORTABLE_SOLID_DIAMETER_MM = 0.9
  *   - despeckle (杂点清理): 与图像像素数成正相关。大图像素多，小的孤立黑点区域
  *     对应的像素也多，需要提高清理阈值；小图反之。
  *   - smoothing (线条平滑): 与 detail 同比例，detail 越高需要越多平滑抑制锯齿。
- *   - strokeWidth (线条加粗): 高分辨率线稿通常线条本身就有足够像素，无需加粗；
+ *   - expandStrokeMm (加粗描边): 高分辨率线稿通常线条本身就有足够像素，无需加粗；
  *     低分辨率线稿需要适度加粗避免后续腐蚀把线吃掉。
  */
 export function calculateAutoLineartParams(
@@ -64,7 +66,7 @@ export function calculateAutoLineartParams(
   // smoothing: 与 detail 线性相关
   const smoothing = Math.round(clamp(12 + detail * 0.22, 0, 72))
 
-  // 注意：自动调参不再覆盖 strokeWidth，始终使用用户设定值（默认 0 = 原图粗细）
+  // 注意：自动调参不再覆盖 expandStrokeMm，始终使用用户设定值（默认 0 = 原图粗细）
   // 即使是低分辨率小图，也由用户自行决定是否加粗。
 
   return {
@@ -102,7 +104,7 @@ interface MeshData {
 
 type PreviewModelArtworkInput = Pick<
   ProcessedArtwork,
-  'baseLoops' | 'lineLoops' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm'
+  'baseLoops' | 'lineLoops' | 'lineLoopsB' | 'bFaceHeightMap' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm'
 >
 
 interface BambuModelSettingsObject {
@@ -216,12 +218,17 @@ export async function processArtwork({
   workMode,
 }: ProcessArtworkInput): Promise<ProcessedArtwork> {
   const source = importedLineart
-    ? {
+    ? (() => {
+      const loops = normalizeLoops(importedLineart.loops)
+      const bounds = getLoopBounds(loops)
+      return {
         kind: 'dxf' as const,
         width: importedLineart.widthMm,
         height: importedLineart.heightMm,
-        loops: normalizeLoops(importedLineart.loops),
+        loops,
+        canvasBounds: { minX: 0, minY: 0, width: bounds.width, height: bounds.height },
       }
+    })()
     : sourceImage
       ? await buildImageLineart(sourceImage, lineartSettings)
       : null
@@ -233,33 +240,27 @@ export async function processArtwork({
   const sourceLoops = lineartSettings.mirror
     ? mirrorLoopsHorizontally(source.loops)
     : source.loops
+  const srcBounds = lineartSettings.mirror
+    ? mirrorCanvasBoundsHorizontally(source.loops, source.canvasBounds)
+    : source.canvasBounds
 
   const layout = layoutLineLoops(
     sourceLoops,
     baseplateSettings,
+    srcBounds,
   )
   const pixelsPerMm = choosePixelsPerMm(layout.boardWidthMm, layout.boardHeightMm, lineartSettings.detail)
+  // 安全边距以 UI 设置的 marginMm 为准；outline 模板（没有 marginMm 概念）或缺失时回退 expandStrokeMm+1
   const paddingMm = baseplateSettings.template === 'outline'
-    ? Math.max(3, baseplateSettings.expandMm + lineartSettings.strokeWidth + 2)
-    : Math.max(2, lineartSettings.strokeWidth + 1)
+    ? lineartSettings.expandStrokeMm + 1
+    : Math.max(0, baseplateSettings.marginMm ?? lineartSettings.expandStrokeMm + 1)
 
-  const lineMask = rasterizeLoopsToMask(
+  const finalLineLoops = finalizeLineLoops(
     layout.lineLoops,
     layout.boardWidthMm,
     layout.boardHeightMm,
     pixelsPerMm,
     paddingMm,
-  )
-  // 0.005 mm² ≈ 直径 0.08 mm 的圆，只剔除完全退化的多边形或真正的像素噪点。
-  // 此前 0.3 mm² 会把瞳孔、嘴角、小发梢、小装饰点等小细节错误丢掉（
-  // Ø 0.6 mm 的眼睛只有 ~0.28 mm²），导致 SVG 预览正常但 3MF 切片里
-  // 这些位置变空（只剩底板填充线）。前面的 despeckle 已经清掉了小连通
-  // 域噪点，因此这里不需要再做激进过滤。
-  const MIN_LOOP_AREA_MM2 = 0.005
-  const finalLineLoops = smoothLoops(
-    traceMaskToLoops(lineMask.mask, lineMask.width, lineMask.height)
-      .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
-      .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2),
     lineartSettings.smoothing,
   )
 
@@ -273,6 +274,13 @@ export async function processArtwork({
   let visibleLineLoops = finalLineLoops
 
   if (baseplateSettings.template === 'outline') {
+    const lineMask = rasterizeLoopsToMask(
+      finalLineLoops,
+      layout.boardWidthMm,
+      layout.boardHeightMm,
+      pixelsPerMm,
+      paddingMm,
+    )
     const baseMask = dilateMask(
       lineMask.mask,
       lineMask.width,
@@ -338,6 +346,618 @@ export async function processArtwork({
   }
 }
 
+/**
+ * 线稿构建助手：将已布局到画板上的线稿回路光栅化 → 描边 → 平滑 → 过滤退化多边形。
+ * 抽取出来供掐丝模式（processArtwork）与光映浮雕模式（processLightReliefArtwork）共用，
+ * 保证 A/B 两面与单面线稿走完全一致的处理管线。
+ *
+ * 0.005 mm² ≈ 直径 0.08 mm 的圆，只剔除完全退化的多边形或真正的像素噪点。
+ * 前面的 despeckle 已经清掉了小连通域噪点，因此这里不做激进过滤。
+ */
+function finalizeLineLoops(
+  laidOutLoops: VectorLoop[],
+  boardWidthMm: number,
+  boardHeightMm: number,
+  pixelsPerMm: number,
+  paddingMm: number,
+  smoothing: number,
+): VectorLoop[] {
+  const lineMask = rasterizeLoopsToMask(
+    laidOutLoops,
+    boardWidthMm,
+    boardHeightMm,
+    pixelsPerMm,
+    paddingMm,
+  )
+  const MIN_LOOP_AREA_MM2 = 0.005
+  return smoothLoops(
+    traceMaskToLoops(lineMask.mask, lineMask.width, lineMask.height)
+      .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2),
+    smoothing,
+  )
+}
+
+interface ProcessLightReliefArtworkInput {
+  sourceImage: SourceImage | null
+  importedLineart: ImportedLineart | null
+  /** halftone 模式下 B 面独立图片源（lineart 模式忽略） */
+  sourceImageB: SourceImage | null
+  lineartSettings: LineartSettings
+  baseplateSettings: BaseplateSettings
+  lightReliefSettings: LightReliefSettings
+}
+
+interface ResolvedLineartSource {
+  kind: 'image' | 'dxf'
+  width: number
+  height: number
+  loops: VectorLoop[]
+  /**
+   * loops 所属的"完整画布（含空白边）"在 loops 同一坐标空间下的包围盒。
+   * - 对于 image 管线：canvasBounds 是源图矩形 (0,0,srcW,srcH) 经与 loops 相同的 normalizeLoops+scaleLoopsToMaxDimension 后得到。
+   * - 对于 dxf 管线：canvasBounds 与 loops 紧 bbox 相同（DXF 本身无空白画布概念）。
+   * 用于 layoutLineLoops 按"完整画布"缩放，保留源图空白边比例。
+   */
+  canvasBounds: { minX: number; minY: number; width: number; height: number }
+}
+
+async function resolveLineartSource(
+  sourceImage: SourceImage | null,
+  importedLineart: ImportedLineart | null,
+  settings: LineartSettings,
+): Promise<ResolvedLineartSource | null> {
+  if (importedLineart) {
+    const loops = normalizeLoops(importedLineart.loops)
+    const bounds = getLoopBounds(loops)
+    return {
+      kind: 'dxf',
+      width: importedLineart.widthMm,
+      height: importedLineart.heightMm,
+      loops,
+      canvasBounds: { ...bounds, minX: 0, minY: 0 },
+    }
+  }
+  if (sourceImage) {
+    return await buildImageLineart(sourceImage, settings)
+  }
+  return null
+}
+
+/** 黑色/红色像素检测容差：接近纯黑或纯红即视为该色元素存在。 */
+const LIGHT_RELIEF_COLOR_DETECT_TOLERANCE = 48
+
+/**
+ * 检测图片是否包含黑色(0,0,0)与红色(255,0,0)像素。
+ * - hasBlack: 存在接近纯黑的像素
+ * - hasRed: 存在接近纯红（R 高、G/B 低）的像素
+ * 用于光映浮雕自动判断走 lineart 模式还是 halftone 模式。
+ */
+export async function detectImageColors(sourceImage: SourceImage): Promise<{ hasBlack: boolean; hasRed: boolean }> {
+  const image = await loadHtmlImage(sourceImage.dataUrl)
+  const maxDim = 320
+  const scale = Math.min(1, maxDim / Math.max(image.naturalWidth, image.naturalHeight))
+  const w = Math.max(1, Math.round(image.naturalWidth * scale))
+  const h = Math.max(1, Math.round(image.naturalHeight * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) {
+    return { hasBlack: false, hasRed: false }
+  }
+  ctx.drawImage(image, 0, 0, w, h)
+  const { data } = ctx.getImageData(0, 0, w, h)
+  const tol = LIGHT_RELIEF_COLOR_DETECT_TOLERANCE
+  let hasBlack = false
+  let hasRed = false
+  // 采样步长，大图加速
+  const step = Math.max(1, Math.floor((w * h) / 40000))
+  for (let i = 0; i < data.length; i += 4 * step) {
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    if (!hasBlack && r <= tol && g <= tol && b <= tol) {
+      hasBlack = true
+    }
+    if (!hasRed && r >= 255 - tol && g <= tol && b <= tol) {
+      hasRed = true
+    }
+    if (hasBlack && hasRed) break
+  }
+  return { hasBlack, hasRed }
+}
+
+/**
+ * 从已加载的 ImageData 构建灰度高度图，应用曝光与反相。
+ * - 深色 → 高度（厚），浅色 → 低高度（薄）
+ * - 输出归一化 [0,1]
+ */
+function buildHalftoneHeightMapFromImageData(
+  pixels: Uint8ClampedArray,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+  exposure: number,
+  invert: boolean,
+): { width: number; height: number; data: Float32Array } {
+  const w = Math.max(1, targetWidth)
+  const h = Math.max(1, targetHeight)
+  const data = new Float32Array(w * h)
+  // 默认所有像素高度为 0（画布外 / 无图像区域视为最薄）
+  const exposureFactor = Math.pow(2, (exposure - 100) / 100)
+
+  // 按比例缩放 + 居中：计算在目标画布内按源图比例适配后的绘制尺寸与偏移
+  const srcRatio = sourceWidth / sourceHeight
+  const dstRatio = w / h
+  let drawW: number
+  let drawH: number
+  let offsetX: number
+  let offsetY: number
+  if (srcRatio > dstRatio) {
+    drawW = w
+    drawH = Math.max(1, Math.round(w / srcRatio))
+    offsetX = 0
+    offsetY = Math.max(0, Math.floor((h - drawH) / 2))
+  } else {
+    drawH = h
+    drawW = Math.max(1, Math.round(h * srcRatio))
+    offsetY = 0
+    offsetX = Math.max(0, Math.floor((w - drawW) / 2))
+  }
+
+  // data[y * w + x] 的坐标语义（与 internal loops 一致）：
+  // y=0 → 画面顶部（对应 loops 内部 y=0=顶），y=h-1 → 画面底部（对应 loops 内部 y=BH=底）
+  // canvas 源图像：srcY=0 也是顶行。所以 dy=0 → srcY=0（顶），dy=drawH-1 → srcY=sourceHeight-1（底）
+  // 3MF 导出时会在 buildHalftoneReliefMesh(flipY=true) 里再做 Y 翻转，使其与 flipLoopsForModelExport 的 A 面线稿对齐。
+  for (let dy = 0; dy < drawH; dy += 1) {
+    const y = offsetY + dy
+    if (y < 0 || y >= h) continue
+    const srcY = Math.min(sourceHeight - 1, Math.floor((dy * sourceHeight) / drawH))
+    const rowStart = y * w
+    for (let dx = 0; dx < drawW; dx += 1) {
+      const x = offsetX + dx
+      if (x < 0 || x >= w) continue
+      const srcX = Math.min(sourceWidth - 1, Math.floor((dx * sourceWidth) / drawW))
+      const srcOffset = (srcY * sourceWidth + srcX) * 4
+      const r = pixels[srcOffset]
+      const g = pixels[srcOffset + 1]
+      const b = pixels[srcOffset + 2]
+      const a = pixels[srcOffset + 3] / 255
+      // 灰度（0~1）
+      let luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+      luminance *= exposureFactor
+      luminance = Math.max(0, Math.min(1, luminance))
+      if (a < 0.5) luminance = 1
+      // 深色 → 厚（高），浅色 → 薄（低）
+      let pv = 1 - luminance
+      if (invert) pv = 1 - pv
+      data[rowStart + x] = pv
+    }
+  }
+  return { width: w, height: h, data }
+}
+
+/**
+ * 根据高度图生成透光浮雕 B 面闭合网格（拓竹式结构）。
+ *
+ * - 厚度沿 Z 轴方向：zStart（底，固定）→ zStart + 高度图*maxHeightMm（顶面，随灰度变化）。
+ * - 生成完整闭合体（顶面 + 底面 + 四周边墙），保证切片器识别为水密模型。
+ * - flipY=true 时：对 Y 轴应用翻转（y' = boardHeightMm - y），使 halftone 与 3MF 导出时经过 flipLoopsForModelExport 的线稿对齐。
+ *   flipY=false 时：Y 不翻转，直接使用 heightMap 的原始方向（y=0 对应 worldY=0），用于内部预览。
+ */
+function buildHalftoneReliefMesh(
+  heightMap: { width: number; height: number; data: Float32Array },
+  pixelsPerMm: number,
+  zStart: number,
+  maxHeightMm: number,
+  boardWidthMm: number,
+  boardHeightMm: number,
+  flipY: boolean,
+): MeshData {
+  const mesh: MeshData = { vertices: [], triangles: [] }
+  if (maxHeightMm <= 0) return mesh
+  const { width: W, height: H, data } = heightMap
+  if (W <= 0 || H <= 0) return mesh
+  // 严格贴合画板外框：W 个像素对应 boardWidthMm，H 个像素对应 boardHeightMm
+  // （不使用 1/pixelsPerMm，因为 ceil(...) 会让网格略大于画板）
+  const cellMmX = boardWidthMm / W
+  const cellMmY = boardHeightMm / H
+
+  const minThick = Math.max(0.05, maxHeightMm * 0.02)
+  const heights = new Float32Array(W * H)
+  for (let i = 0; i < data.length; i += 1) {
+    heights[i] = minThick + data[i] * (maxHeightMm - minThick)
+  }
+  const getH = (x: number, y: number): number => (
+    x >= 0 && y >= 0 && x < W && y < H ? heights[y * W + x] : minThick
+  )
+
+  const numX = W + 1
+  const numY = H + 1
+  const bottomIndex = (x: number, y: number) => (y * numX + x) * 2
+  const topIndex = (x: number, y: number) => (y * numX + x) * 2 + 1
+  const totalVerts = numX * numY * 2
+  mesh.vertices = new Array(totalVerts) as MeshData['vertices']
+  for (let y = 0; y < numY; y += 1) {
+    // flipY=true 时：y_idx=0（画面顶部，loops语义y=0）→ worldY = boardHeightMm（3MF 导出大Y=视觉上顶）
+    // flipY=false 时：y_idx=0 → worldY = 0
+    const worldY = flipY
+      ? boardHeightMm - y * cellMmY
+      : y * cellMmY
+    for (let x = 0; x < numX; x += 1) {
+      const worldX = x * cellMmX
+      let hSum = 0
+      let hCount = 0
+      for (const [dx, dy] of [[0, 0], [-1, 0], [0, -1], [-1, -1]] as const) {
+        const px = x + dx
+        const py = y + dy
+        if (px >= 0 && py >= 0 && px < W && py < H) {
+          hSum += getH(px, py)
+          hCount += 1
+        }
+      }
+      const avgH = hCount > 0 ? hSum / hCount : minThick
+      mesh.vertices[bottomIndex(x, y)] = [worldX, worldY, zStart]
+      mesh.vertices[topIndex(x, y)] = [worldX, worldY, zStart + avgH]
+    }
+  }
+  // 三角形数组预估算：顶面(W*H*2) + 底面(W*H*2) + 四周侧面(H*2 + W*2 + 4) ≈ 4WH + 4(W+H)
+  mesh.triangles = []
+
+  const addTri = (a: number, b: number, c: number) => mesh.triangles.push([a, b, c])
+  const addQuad = (a: number, b: number, c: number, d: number) => {
+    addTri(a, b, c); addTri(a, c, d)
+  }
+
+  // 顶面（朝上，Z 增加方向）：绕 CCW（从上方看）(x,y) → (x+1,y) → (x+1,y+1) → (x,y+1)
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const a = topIndex(x, y)
+      const b = topIndex(x + 1, y)
+      const c = topIndex(x + 1, y + 1)
+      const d = topIndex(x, y + 1)
+      addQuad(a, b, c, d)
+    }
+  }
+  // 底面（朝下）：需翻转顶点顺序以保持法线朝 -Z
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const a = bottomIndex(x, y)
+      const b = bottomIndex(x + 1, y)
+      const c = bottomIndex(x + 1, y + 1)
+      const d = bottomIndex(x, y + 1)
+      addQuad(a, d, c, b)
+    }
+  }
+
+  // 左墙（x=0，法线朝 -X）：从前往后（y=0 到 y=H-1），顶面在外侧（-X方向）
+  for (let y = 0; y < H; y += 1) {
+    const bl = bottomIndex(0, y)        // (0, y) 底
+    const tl = topIndex(0, y)           // (0, y) 顶
+    const br = bottomIndex(0, y + 1)    // (0, y+1) 底
+    const tr = topIndex(0, y + 1)       // (0, y+1) 顶
+    addQuad(bl, tl, tr, br) // 朝 -X：bl → tl (沿+Y外侧向上) → tr → br
+  }
+  // 右墙（x=W，法线朝 +X）
+  for (let y = 0; y < H; y += 1) {
+    const bl = bottomIndex(W, y)
+    const tl = topIndex(W, y)
+    const br = bottomIndex(W, y + 1)
+    const tr = topIndex(W, y + 1)
+    addQuad(bl, br, tr, tl) // 朝 +X：bl → br → tr → tl
+  }
+  // 前墙（y=0，法线朝 -Y）：从左到右（x=0到W-1）。注意看法线朝外(-Y)的缠绕
+  for (let x = 0; x < W; x += 1) {
+    const bl = bottomIndex(x, 0)
+    const br = bottomIndex(x + 1, 0)
+    const tr = topIndex(x + 1, 0)
+    const tl = topIndex(x, 0)
+    addQuad(bl, br, tr, tl) // 朝 -Y：bl → br(+X) → tr(+Z) → tl
+  }
+  // 后墙（y=H，法线朝 +Y）
+  for (let x = 0; x < W; x += 1) {
+    const bl = bottomIndex(x, H)
+    const br = bottomIndex(x + 1, H)
+    const tr = topIndex(x + 1, H)
+    const tl = topIndex(x, H)
+    addQuad(bl, tl, tr, br)
+  }
+
+  return mesh
+}
+
+/**
+ * 光映浮雕模式线稿处理。
+ * - A 面始终提取黑色(0,0,0)线稿，走掐丝线稿处理管线。
+ * - B 面模式：
+ *   - 'lineart': 同图提取红色(255,0,0)线稿，B 面按线稿阴刻处理。
+ *   - 'halftone': 透光浮雕，使用单独导入的 B 面图片，转为灰度高度图，按深浅打印厚度。
+ * - 自动检测：当 bFaceMode==='lineart' 且图片不包含红色像素时，自动回退到 halftone 模式
+ *   （此时若未导入 B 面图片，则 B 面为空）。
+ * - DXF 导入时仅 A 面有效（无颜色信息）。
+ * - baseplate 固定为矩形模板（参考 defaultLightReliefBaseplateSettings）。
+ */
+export async function processLightReliefArtwork({
+  sourceImage,
+  importedLineart,
+  sourceImageB,
+  lineartSettings,
+  baseplateSettings,
+  lightReliefSettings,
+}: ProcessLightReliefArtworkInput): Promise<ProcessedArtwork> {
+  // A 面固定提取黑色，强制不反相。
+  const settingsForA: LineartSettings = { ...lineartSettings, targetColor: '#000000', invert: false }
+  const sourceA = await resolveLineartSource(sourceImage, importedLineart, settingsForA)
+
+  if (!sourceA || !sourceA.loops.length) {
+    throw new Error('A 面没有可用的线稿轮廓，请尝试调整颜色容差。')
+  }
+
+  const aRaw = lineartSettings.mirror ? mirrorLoopsHorizontally(sourceA.loops) : sourceA.loops
+  const aBounds = lineartSettings.mirror
+    ? mirrorCanvasBoundsHorizontally(sourceA.loops, sourceA.canvasBounds)
+    : sourceA.canvasBounds
+  const layoutA = layoutLineLoops(aRaw, baseplateSettings, aBounds)
+
+  const pixelsPerMm = choosePixelsPerMm(layoutA.boardWidthMm, layoutA.boardHeightMm, lineartSettings.detail)
+  // 安全边距以 UI 设置的 marginMm 为准；outline 模板（没有 marginMm 概念）或缺失时回退 expandStrokeMm+1
+  const paddingMm = baseplateSettings.template === 'outline'
+    ? lineartSettings.expandStrokeMm + 1
+    : Math.max(0, baseplateSettings.marginMm ?? lineartSettings.expandStrokeMm + 1)
+
+  const finalLineLoopsA = finalizeLineLoops(
+    layoutA.lineLoops,
+    layoutA.boardWidthMm,
+    layoutA.boardHeightMm,
+    pixelsPerMm,
+    paddingMm,
+    lineartSettings.smoothing,
+  )
+
+  if (!finalLineLoopsA.length) {
+    throw new Error('A 面线稿在当前参数下被清空了，请降低杂点清理或提高线宽。')
+  }
+
+  // 确定 B 面模式：auto 模式下检测红色像素；lineart 模式下也检测红色，无红色则回退 halftone。
+  let effectiveBFaceMode: 'lineart' | 'halftone'
+  if (lightReliefSettings.bFaceMode === 'halftone') {
+    effectiveBFaceMode = 'halftone'
+  } else if (lightReliefSettings.bFaceMode === 'lineart') {
+    // 强制 lineart：不自动回退，即使无红色也按线稿处理（B 面可能为空）
+    effectiveBFaceMode = 'lineart'
+  } else {
+    // auto：检测红色像素
+    effectiveBFaceMode = 'lineart'
+    if (sourceImage && !importedLineart) {
+      const { hasRed } = await detectImageColors(sourceImage)
+      if (!hasRed) {
+        effectiveBFaceMode = 'halftone'
+      }
+    }
+  }
+
+  let finalLineLoopsB: VectorLoop[] = []
+  let bFaceHeightMap: { width: number; height: number; data: Float32Array } | undefined
+
+  if (effectiveBFaceMode === 'lineart') {
+    // lineart 模式：从同图提取红色线稿。
+    const settingsForB: LineartSettings = { ...lineartSettings, targetColor: '#ff0000', invert: false }
+    const sourceB = sourceImage && !importedLineart
+      ? await resolveLineartSource(sourceImage, null, settingsForB)
+      : null
+    const bRawRaw = sourceB?.loops.length ? sourceB.loops : []
+    const bRaw = lineartSettings.mirror ? mirrorLoopsHorizontally(bRawRaw) : bRawRaw
+    const bBounds = sourceB
+      ? (lineartSettings.mirror
+          ? mirrorCanvasBoundsHorizontally(sourceB.loops, sourceB.canvasBounds)
+          : sourceB.canvasBounds)
+      : sourceA.canvasBounds
+    const layoutB = bRaw.length
+      ? layoutLineLoops(bRaw, baseplateSettings, bBounds)
+      : { boardWidthMm: layoutA.boardWidthMm, boardHeightMm: layoutA.boardHeightMm, lineLoops: [] as VectorLoop[] }
+    finalLineLoopsB = layoutB.lineLoops.length
+      ? finalizeLineLoops(
+        layoutB.lineLoops,
+        layoutB.boardWidthMm,
+        layoutB.boardHeightMm,
+        pixelsPerMm,
+        paddingMm,
+        lineartSettings.smoothing,
+      )
+      : []
+  } else {
+    // halftone 模式：从独立 B 面图片构建灰度高度图。
+    if (sourceImageB) {
+      const imageB = await loadHtmlImage(sourceImageB.dataUrl)
+      const canvas = document.createElement('canvas')
+      canvas.width = imageB.naturalWidth
+      canvas.height = imageB.naturalHeight
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (ctx) {
+        if (lineartSettings.mirror) {
+          // 水平镜像：X 轴翻转后绘制
+          ctx.save()
+          ctx.translate(canvas.width, 0)
+          ctx.scale(-1, 1)
+          ctx.drawImage(imageB, 0, 0, canvas.width, canvas.height)
+          ctx.restore()
+        } else {
+          ctx.drawImage(imageB, 0, 0, canvas.width, canvas.height)
+        }
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const fullW = Math.max(1, Math.ceil(layoutA.boardWidthMm * pixelsPerMm))
+        const fullH = Math.max(1, Math.ceil(layoutA.boardHeightMm * pixelsPerMm))
+        if (paddingMm <= 0) {
+          // 安全边距=0：内容直接铺满整个画板，不留外围空白
+          bFaceHeightMap = buildHalftoneHeightMapFromImageData(
+            imageData.data,
+            canvas.width,
+            canvas.height,
+            fullW,
+            fullH,
+            lightReliefSettings.bFaceExposure,
+            lightReliefSettings.bFaceInvert,
+          )
+        } else {
+          // 安全边距（paddingMm）对 A/B 面都生效：
+          // 内容区域缩放到 (boardW - 2*padding) × (boardH - 2*padding) 并居中，
+          // 外围 paddingMm 区域 height=1（最大厚度），halftone 壳体以满厚度耗材填充。
+          const innerW = Math.max(1, layoutA.boardWidthMm - paddingMm * 2)
+          const innerH = Math.max(1, layoutA.boardHeightMm - paddingMm * 2)
+          const contentW = Math.max(1, Math.ceil(innerW * pixelsPerMm))
+          const contentH = Math.max(1, Math.ceil(innerH * pixelsPerMm))
+          const paddingPxX = Math.max(0, Math.floor((fullW - contentW) / 2))
+          const paddingPxY = Math.max(0, Math.floor((fullH - contentH) / 2))
+          // 先对"内容画布"构建灰度图（含缩放、居中），然后贴到完整画布的 padding 偏移处
+          const innerHeightMap = buildHalftoneHeightMapFromImageData(
+            imageData.data,
+            canvas.width,
+            canvas.height,
+            contentW,
+            contentH,
+            lightReliefSettings.bFaceExposure,
+            lightReliefSettings.bFaceInvert,
+          )
+          // 外围 padding 区域填 1（=最大厚度=实心耗材），而非 0（=最薄≈空白）
+          const outerData = new Float32Array(fullW * fullH).fill(1)
+          for (let y = 0; y < contentH; y += 1) {
+            const dstRow = (y + paddingPxY) * fullW + paddingPxX
+            const srcRow = y * contentW
+            for (let x = 0; x < contentW; x += 1) {
+              outerData[dstRow + x] = innerHeightMap.data[srcRow + x]
+            }
+          }
+          bFaceHeightMap = { width: fullW, height: fullH, data: outerData }
+        }
+      }
+    }
+  }
+
+  // 光映浮雕画板固定为矩形模板，baseLoops 即矩形外框。
+  const baseLoops = createTemplateBaseLoops(baseplateSettings)
+
+  const previews = buildLightReliefPreviewAssets(
+    finalLineLoopsA,
+    finalLineLoopsB,
+    bFaceHeightMap,
+    effectiveBFaceMode,
+    baseLoops,
+    layoutA.boardWidthMm,
+    layoutA.boardHeightMm,
+    baseplateSettings,
+  )
+
+  return {
+    sourceKind: sourceA.kind,
+    sourceWidth: sourceA.width,
+    sourceHeight: sourceA.height,
+    lineLoops: finalLineLoopsA,
+    lineLoopsB: finalLineLoopsB,
+    bFaceHeightMap,
+    effectiveBFaceMode,
+    baseLoops,
+    boardWidthMm: layoutA.boardWidthMm,
+    boardHeightMm: layoutA.boardHeightMm,
+    pixelsPerMm,
+    previews,
+    stats: {
+      sourceKind: sourceA.kind,
+      sourceWidth: sourceA.width,
+      sourceHeight: sourceA.height,
+      lineLoopCount: finalLineLoopsA.length,
+      baseLoopCount: baseLoops.length,
+      lineSegments: finalLineLoopsA.reduce((sum, loop) => sum + loop.points.length, 0),
+      baseSegments: baseLoops.reduce((sum, loop) => sum + loop.points.length, 0),
+      boardWidthMm: layoutA.boardWidthMm,
+      boardHeightMm: layoutA.boardHeightMm,
+    },
+  }
+}
+
+// 光映浮雕预览中 B 面用蓝色辅助区分（A 面沿用 lineColor=黑）。
+const LIGHT_RELIEF_FACE_B_PREVIEW_COLOR = '#0066cc'
+
+/**
+ * 将高度图渲染为 PNG dataUrl（halftone B 面预览用）。
+ * 高度越高（越厚）颜色越深，便于在预览中看出深浅分布。
+ */
+function buildHalftonePreviewDataUrl(
+  heightMap: { width: number; height: number; data: Float32Array } | undefined,
+  boardWidthMm: number,
+  boardHeightMm: number,
+): string | null {
+  if (!heightMap || !heightMap.data.length) return null
+  const { width, height, data } = heightMap
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const imageData = ctx.createImageData(width, height)
+  for (let i = 0; i < data.length; i += 1) {
+    // 高度 1（最深/最厚）→ 黑，0（最浅/最薄）→ 白
+    const v = Math.round((1 - data[i]) * 255)
+    imageData.data[i * 4] = v
+    imageData.data[i * 4 + 1] = v
+    imageData.data[i * 4 + 2] = v
+    imageData.data[i * 4 + 3] = 255
+  }
+  ctx.putImageData(imageData, 0, 0)
+  // 缩放 SVG 容器，使预览尺寸与画板一致
+  return canvas.toDataURL('image/png')
+}
+
+function buildLightReliefPreviewAssets(
+  lineLoopsA: VectorLoop[],
+  lineLoopsB: VectorLoop[],
+  bFaceHeightMap: { width: number; height: number; data: Float32Array } | undefined,
+  bFaceMode: 'lineart' | 'halftone',
+  baseLoops: VectorLoop[],
+  boardWidthMm: number,
+  boardHeightMm: number,
+  settings: BaseplateSettings,
+): PreviewAssets {
+  const halftonePreviewUrl = bFaceMode === 'halftone'
+    ? buildHalftonePreviewDataUrl(bFaceHeightMap, boardWidthMm, boardHeightMm)
+    : null
+
+  const baseLayers = [
+    { id: 'baseplate', fill: settings.baseColor, loops: baseLoops },
+    { id: 'lineart-a', fill: settings.lineColor, loops: lineLoopsA },
+  ]
+  const ghostLayers = [
+    { id: 'baseplate', fill: settings.baseColor, loops: baseLoops },
+    { id: 'lineart-a-ghost', fill: settings.lineColor, loops: lineLoopsA, opacity: 0.22 },
+  ]
+
+  if (bFaceMode === 'halftone' && halftonePreviewUrl) {
+    // halftone 模式：B 面用灰度图叠加预览
+    return {
+      lineartDataUrl: halftonePreviewUrl,
+      baseplateDataUrl: halftonePreviewUrl,
+      compositeDataUrl: halftonePreviewUrl,
+    }
+  }
+
+  // lineart 模式：B 面用蓝色线稿
+  return {
+    lineartDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      { id: 'lineart-a', fill: settings.lineColor, loops: lineLoopsA },
+      { id: 'lineart-b', fill: LIGHT_RELIEF_FACE_B_PREVIEW_COLOR, loops: lineLoopsB },
+    ]),
+    baseplateDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      ...ghostLayers,
+      { id: 'lineart-b-ghost', fill: LIGHT_RELIEF_FACE_B_PREVIEW_COLOR, loops: lineLoopsB, opacity: 0.22 },
+    ]),
+    compositeDataUrl: buildPreviewSvgDataUrl(boardWidthMm, boardHeightMm, [
+      ...baseLayers,
+      { id: 'lineart-b', fill: LIGHT_RELIEF_FACE_B_PREVIEW_COLOR, loops: lineLoopsB },
+    ]),
+  }
+}
+
 export function exportLineartSvg(filename: string, artwork: ProcessedArtwork, settings: BaseplateSettings) {
   downloadText(filename, buildLineartSvgDocument(artwork, settings), 'image/svg+xml;charset=utf-8')
 }
@@ -346,7 +966,7 @@ export function exportLineartDxf(filename: string, artwork: ProcessedArtwork) {
   downloadText(filename, buildLoopDxf(artwork.lineLoops, 'LINEART'), 'application/dxf;charset=utf-8')
 }
 
-export function export3mf(
+export async function export3mf(
   filename: string,
   artwork: ProcessedArtwork,
   baseplateSettings: BaseplateSettings,
@@ -356,8 +976,8 @@ export function export3mf(
   sealSettings?: SealSettings | null,
 ) {
   const bytes = sealSettings
-    ? buildSeal3mfPackage(artwork, baseplateSettings, sealSettings, printBedSettings, threeMfProfile)
-    : build3mfPackage(artwork, baseplateSettings, extrudeSettings, printBedSettings, threeMfProfile)
+    ? await buildSeal3mfPackage(artwork, baseplateSettings, sealSettings, printBedSettings, threeMfProfile)
+    : await build3mfPackage(artwork, baseplateSettings, extrudeSettings, printBedSettings, threeMfProfile)
   downloadBlob(filename, new Blob([bytes], { type: 'model/3mf' }))
 }
 
@@ -524,16 +1144,16 @@ export function parseDxfText(text: string, name = 'imported.dxf'): ImportedLinea
   }
 }
 
-export function build3mfPackage(
+export async function build3mfPackage(
   artwork: ProcessedArtwork,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
+  onProgress?: (label: string) => void | Promise<void>,
+  lineartSettings?: LineartSettings,
 ) {
-  // #region debug-point B:build-3mf-package
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'B', location: 'generator.ts:build3mfPackage:start', msg: '[DEBUG] start build3mfPackage', data: { boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm, pixelsPerMm: artwork.pixelsPerMm, baseLoopCount: artwork.baseLoops.length, lineLoopCount: artwork.lineLoops.length }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
+  await onProgress?.('正在生成底板网格...')
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
   const lineMeshPixelsPerMm = chooseSingleExportPixelsPerMm(artwork)
@@ -554,6 +1174,7 @@ export function build3mfPackage(
     offsetX,
     offsetY,
   )
+  await onProgress?.('正在生成线稿网格...')
   const lineMesh = translateMesh(
     extrudeMaskToMesh(
       flippedLineLoops,
@@ -562,11 +1183,14 @@ export function build3mfPackage(
       lineMeshPixelsPerMm,
       extrudeSettings.lineHeightMm,
       extrudeSettings.lineThicknessMm,
-      MIN_EXPORTABLE_LINE_WIDTH_MM,
+      extrudeSettings.minLineWidthMm,
+      lineartSettings?.expandStrokeMm ?? 0,
+      lineartSettings?.shrinkStrokeMm ?? 0,
     ),
     offsetX,
     offsetY,
   )
+  await onProgress?.('正在生成 3MF XML...')
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
   const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
   // #region debug-point B:build-3mf-model-xml
@@ -602,6 +1226,7 @@ export function build3mfPackage(
   const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
   const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
+  await onProgress?.('正在压缩 3MF 文件...')
 
   return zipSync({
     '[Content_Types].xml': strToU8(contentTypes),
@@ -611,16 +1236,23 @@ export function build3mfPackage(
     'Metadata/project_settings.config': strToU8(projectSettings),
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
-  }, { level: 0 })
+  }, { level: 6 })
 }
 
-export function buildSeal3mfPackage(
+export async function buildSeal3mfPackage(
   artwork: ProcessedArtwork,
   baseplateSettings: BaseplateSettings,
   sealSettings: SealSettings,
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
+  onProgress?: (label: string) => void | Promise<void>,
+  extrudeSettings?: ExtrudeSettings,
+  lineartSettings?: LineartSettings,
 ) {
+  await onProgress?.('正在生成底板网格...')
+  const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
+  const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
+  const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
   const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
   const flippedLineLoops = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
   const lineMeshPixelsPerMm = chooseSingleExportPixelsPerMm(artwork)
@@ -716,7 +1348,9 @@ export function buildSeal3mfPackage(
         lineMeshPixelsPerMm,
         bodyHeightMm,
         engravingDiffMm,
-        MIN_EXPORTABLE_LINE_WIDTH_MM,
+        minLineWidthMm,
+        expandStrokeMm,
+        shrinkStrokeMm,
       ),
       offsetX,
       offsetY,
@@ -732,7 +1366,9 @@ export function buildSeal3mfPackage(
           lineMeshPixelsPerMm,
           bodyHeightMm,
           engravingDiffMm,
-          MIN_EXPORTABLE_LINE_WIDTH_MM,
+          minLineWidthMm,
+          expandStrokeMm,
+          shrinkStrokeMm,
         ),
         offsetX,
         offsetY,
@@ -741,6 +1377,7 @@ export function buildSeal3mfPackage(
     }
   }
 
+  await onProgress?.('正在生成 3MF XML...')
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
   const modelXml = buildSeal3mfModelXml(meshes, 4, baseplateSettings, applicationName, sealSettings)
 
@@ -756,6 +1393,342 @@ export function buildSeal3mfPackage(
   )
 }
 
+/**
+ * 光映浮雕 3MF 导出。
+ *
+ * Z 轴分层（以默认 totalHeight=1, faceAZ=0/faceAHeight=0.4, faceBZ=0.6/faceBHeight=0.2 为例）：
+ *   - 背景下半 [0, faceBZMm]：耗材2（白），整块画板
+ *   - B 面阴刻层 [faceBZMm, faceBZMm+faceBHeightMm]：耗材2（白），仅填充“画板 减去 B 面线稿”的区域（B 面线稿区域留空）
+ *   - 背景顶部 [faceBZMm+faceBHeightMm, totalHeightMm]：耗材2（白），整块画板
+ *   - A 面线稿 [faceAZMm, faceAZMm+faceAHeightMm]：耗材1（黑），A 面线稿区域
+ *
+ * 耗材槽位与掐丝模式相反：耗材1=线稿（黑），耗材2=背景（白）。
+ */
+export async function buildLightRelief3mfPackage(
+  artwork: ProcessedArtwork,
+  baseplateSettings: BaseplateSettings,
+  lightReliefSettings: LightReliefSettings,
+  printBedSettings: PrintBedSettings,
+  threeMfProfile?: ThreeMfTemplateProfile | null,
+  onProgress?: (label: string) => void | Promise<void>,
+  extrudeSettings?: ExtrudeSettings,
+  lineartSettings?: LineartSettings,
+) {
+  const flippedBaseLoops = flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm)
+  const flippedLineLoopsA = flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm)
+  const lineLoopsB = artwork.lineLoopsB?.length ? artwork.lineLoopsB : []
+  const flippedLineLoopsB = lineLoopsB.length ? flipLoopsForModelExport(lineLoopsB, artwork.boardHeightMm) : []
+  const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
+  const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
+  const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
+  const lineMeshPixelsPerMm = chooseSingleExportPixelsPerMm(artwork)
+
+  const singlePlacement = planPrintBedLayout([{
+    id: 'single-artwork',
+    label: '单文件导出',
+    widthMm: artwork.boardWidthMm,
+    heightMm: artwork.boardHeightMm,
+  }], printBedSettings).placements[0]
+  const offsetX = singlePlacement?.xMm ?? 0
+  const offsetY = singlePlacement?.yMm ?? 0
+
+  const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
+  const bFaceTopMm = faceBZMm + faceBHeightMm
+  const outerBaseLoops = keepOuterLoops(flippedBaseLoops)
+
+  // 每个网格记录其耗材 pindex（0=耗材1黑/A面线稿，1=耗材2白/背景）。
+  const meshes: Array<{ mesh: MeshData; objectId: number; name: string; pindex: number; extruder: number }> = []
+  let nextObjectId = 2
+
+  // 1. 背景下半 [0, faceBZMm]（耗材2）
+  await onProgress?.('正在生成背景下层网格...')
+  if (faceBZMm > 0) {
+    const bgBottomMesh = translateMesh(
+      extrudeLoopsToMesh(outerBaseLoops, 0, faceBZMm),
+      offsetX,
+      offsetY,
+    )
+    meshes.push({ mesh: bgBottomMesh, objectId: nextObjectId, name: '背景下层', pindex: 1, extruder: 2 })
+    nextObjectId += 1
+  }
+
+  // 2. B 面层 [faceBZMm, faceBZMm+faceBHeightMm]（耗材2）
+  if (faceBHeightMm > 0) {
+    await onProgress?.('正在生成 B 面透光浮雕网格...')
+    if (artwork.bFaceHeightMap) {
+      // halftone 模式：按灰度高度图生成透光浮雕网格（耗材2），3MF 导出需 Y 翻转以与 flipLoopsForModelExport 对齐
+      const reliefMesh = translateMesh(
+        buildHalftoneReliefMesh(
+          artwork.bFaceHeightMap,
+          lineMeshPixelsPerMm,
+          faceBZMm,
+          faceBHeightMm,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          true, // flipY
+        ),
+        offsetX,
+        offsetY,
+      )
+      if (reliefMesh.vertices.length) {
+        meshes.push({ mesh: reliefMesh, objectId: nextObjectId, name: 'B面透光浮雕', pindex: 1, extruder: 2 })
+        nextObjectId += 1
+      }
+    } else {
+      // lineart 模式：画板减去 B 面线稿（B 面线稿区域留空）
+      const baseMask = rasterizeLoopsToMask(
+        outerBaseLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        0,
+      )
+      let topMask = baseMask.mask
+      if (flippedLineLoopsB.length) {
+        const lineMaskB = rasterizeLoopsToMask(
+          flippedLineLoopsB,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          lineMeshPixelsPerMm,
+          0,
+        )
+        topMask = subtractMask(baseMask.mask, lineMaskB.mask, baseMask.width, baseMask.height)
+      }
+      const topLoops = traceMaskToLoops(topMask, baseMask.width, baseMask.height)
+        .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
+        .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
+      if (topLoops.length) {
+        const bFaceMesh = translateMesh(
+          extrudeMaskToMesh(
+            topLoops,
+            artwork.boardWidthMm,
+            artwork.boardHeightMm,
+            lineMeshPixelsPerMm,
+            faceBZMm,
+            faceBHeightMm,
+            0,
+          ),
+          offsetX,
+          offsetY,
+        )
+        meshes.push({ mesh: bFaceMesh, objectId: nextObjectId, name: 'B面阴刻层', pindex: 1, extruder: 2 })
+        nextObjectId += 1
+      }
+    }
+  }
+
+  // 3. 背景顶部 [bFaceTopMm, totalHeightMm]（耗材2）
+  await onProgress?.('正在生成背景顶层网格...')
+  const topHeightMm = totalHeightMm - bFaceTopMm
+  if (topHeightMm > 0) {
+    const bgTopMesh = translateMesh(
+      extrudeLoopsToMesh(outerBaseLoops, bFaceTopMm, topHeightMm),
+      offsetX,
+      offsetY,
+    )
+    meshes.push({ mesh: bgTopMesh, objectId: nextObjectId, name: '背景顶层', pindex: 1, extruder: 2 })
+    nextObjectId += 1
+  }
+
+  // 4. A 面线稿 [faceAZMm, faceAZMm+faceAHeightMm]（耗材1）
+  await onProgress?.('正在生成 A 面线稿网格...')
+  if (faceAHeightMm > 0 && flippedLineLoopsA.length) {
+    const aFaceMesh = translateMesh(
+      extrudeMaskToMesh(
+        flippedLineLoopsA,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        faceAZMm,
+        faceAHeightMm,
+        minLineWidthMm,
+        expandStrokeMm,
+        shrinkStrokeMm,
+      ),
+      offsetX,
+      offsetY,
+    )
+    meshes.push({ mesh: aFaceMesh, objectId: nextObjectId, name: 'A面线稿', pindex: 0, extruder: 1 })
+    nextObjectId += 1
+  }
+
+  await onProgress?.('正在生成 3MF XML...')
+  const compositeObjectId = nextObjectId
+  const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
+  const modelXml = buildLightRelief3mfModelXml(meshes, compositeObjectId, baseplateSettings, applicationName)
+
+  const parts = meshes.map((m) => ({ id: m.objectId, name: m.name, extruder: m.extruder }))
+  await onProgress?.('正在压缩 3MF 文件...')
+  return buildSeal3mfZipPackage(
+    modelXml,
+    parts,
+    compositeObjectId,
+    baseplateSettings,
+    printBedSettings,
+    threeMfProfile,
+    { compositeName: '光映浮雕', filamentColorOrder: 'line-base' },
+  )
+}
+
+function buildLightRelief3mfModelXml(
+  meshes: Array<{ mesh: MeshData; objectId: number; name: string; pindex: number }>,
+  compositeObjectId: number,
+  baseplateSettings: BaseplateSettings,
+  applicationName: string,
+) {
+  // basematerials 顺序：耗材1=A面线稿（黑/lineColor），耗材2=背景（白/baseColor）。
+  const lineColor = `${baseplateSettings.lineColor.toUpperCase()}FF`
+  const baseColor = `${baseplateSettings.baseColor.toUpperCase()}FF`
+
+  const objects: string[] = []
+  const componentIds: number[] = []
+  for (const entry of meshes) {
+    objects.push(meshTo3mfObject(entry.mesh, entry.objectId, entry.name, entry.pindex))
+    componentIds.push(entry.objectId)
+  }
+  objects.push(build3mfCompositeObject(compositeObjectId, '光映浮雕组合', componentIds))
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
+    `  <metadata name="Application">${applicationName}</metadata>`,
+    '  <metadata name="Designer">线稿底板生成器</metadata>',
+    '  <metadata name="Title">光映浮雕 3MF</metadata>',
+    '  <resources>',
+    '    <basematerials id="1">',
+    `      <base name="耗材1-A面线稿" displaycolor="${lineColor}"/>`,
+    `      <base name="耗材2-背景" displaycolor="${baseColor}"/>`,
+    '    </basematerials>',
+    ...objects,
+    '  </resources>',
+    '  <build>',
+    `    <item objectid="${compositeObjectId}"/>`,
+    '  </build>',
+    '</model>',
+  ].join('\n')
+}
+
+/**
+ * 光映浮雕 3D 预览 glTF。与 buildLightRelief3mfPackage 共用同一套分层逻辑，
+ * 仅以预览分辨率构建网格并用真实颜色渲染。
+ */
+export function buildLightReliefPreviewModelGltfBlob(
+  artwork: PreviewModelArtworkInput,
+  baseplateSettings: BaseplateSettings,
+  lightReliefSettings: LightReliefSettings,
+  extrudeSettings?: ExtrudeSettings,
+  lineartSettings?: LineartSettings,
+) {
+  const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
+  const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
+  const bFaceTopMm = faceBZMm + faceBHeightMm
+  const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
+  const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
+  const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
+  const outerBaseLoops = keepOuterLoops(artwork.baseLoops)
+  const lineLoopsB = artwork.lineLoopsB?.length ? artwork.lineLoopsB : []
+
+  const meshes: Array<{ mesh: MeshData; name: string; color: string }> = []
+
+  if (faceBZMm > 0) {
+    meshes.push({
+      mesh: extrudeLoopsToMesh(outerBaseLoops, 0, faceBZMm),
+      name: '背景下层',
+      color: baseplateSettings.baseColor,
+    })
+  }
+
+  if (faceBHeightMm > 0) {
+    if (artwork.bFaceHeightMap) {
+      // halftone 模式：透光浮雕网格（预览内部坐标系，不 flipY）
+      meshes.push({
+        mesh: buildHalftoneReliefMesh(
+          artwork.bFaceHeightMap,
+          lineMeshPixelsPerMm,
+          faceBZMm,
+          faceBHeightMm,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          false, // flipY
+        ),
+        name: 'B面透光浮雕',
+        color: baseplateSettings.baseColor,
+      })
+    } else {
+      // lineart 模式：画板减去 B 面线稿
+      const baseMask = rasterizeLoopsToMask(
+        outerBaseLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        0,
+      )
+      let topMask = baseMask.mask
+      if (lineLoopsB.length) {
+        const lineMaskB = rasterizeLoopsToMask(
+          lineLoopsB,
+          artwork.boardWidthMm,
+          artwork.boardHeightMm,
+          lineMeshPixelsPerMm,
+          0,
+        )
+        topMask = subtractMask(baseMask.mask, lineMaskB.mask, baseMask.width, baseMask.height)
+      }
+      const topLoops = traceMaskToLoops(topMask, baseMask.width, baseMask.height)
+        .map((loop) => pixelsToMm(loop, lineMeshPixelsPerMm, 0))
+        .filter((loop) => Math.abs(loopArea(loop.points)) >= 0.01)
+      if (topLoops.length) {
+        meshes.push({
+          mesh: extrudeMaskToMesh(
+            topLoops,
+            artwork.boardWidthMm,
+            artwork.boardHeightMm,
+            lineMeshPixelsPerMm,
+            faceBZMm,
+            faceBHeightMm,
+            0,
+          ),
+          name: 'B面阴刻层',
+          color: baseplateSettings.baseColor,
+        })
+      }
+    }
+  }
+
+  const topHeightMm = totalHeightMm - bFaceTopMm
+  if (topHeightMm > 0) {
+    meshes.push({
+      mesh: extrudeLoopsToMesh(outerBaseLoops, bFaceTopMm, topHeightMm),
+      name: '背景顶层',
+      color: baseplateSettings.baseColor,
+    })
+  }
+
+  if (faceAHeightMm > 0 && artwork.lineLoops.length) {
+    meshes.push({
+      mesh: extrudeMaskToMesh(
+        artwork.lineLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        faceAZMm,
+        faceAHeightMm,
+        minLineWidthMm,
+        expandStrokeMm,
+        shrinkStrokeMm,
+      ),
+      name: 'A面线稿',
+      color: baseplateSettings.lineColor,
+    })
+  }
+
+  return buildGltfPreviewBlob(
+    meshes,
+    artwork.boardWidthMm,
+    artwork.boardHeightMm,
+  )
+}
+
 function buildSeal3mfZipPackage(
   modelXml: string,
   parts: Array<{ id: number; name: string; extruder: number }>,
@@ -763,7 +1736,13 @@ function buildSeal3mfZipPackage(
   baseplateSettings: BaseplateSettings,
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
+  options?: {
+    compositeName?: string
+    filamentColorOrder?: 'base-line' | 'line-base'
+  },
 ) {
+  const compositeName = options?.compositeName ?? (parts.length > 1 ? '阳刻印章' : '阴刻印章')
+  const filamentColorOrder = options?.filamentColorOrder ?? 'base-line'
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -781,7 +1760,7 @@ function buildSeal3mfZipPackage(
   const modelSettings = buildBambuModelSettingsConfig([
     {
       id: compositeObjectId,
-      name: parts.length > 1 ? '阳刻印章' : '阴刻印章',
+      name: compositeName,
       parts,
     },
   ], [{
@@ -789,7 +1768,7 @@ function buildSeal3mfZipPackage(
     objectIds: [compositeObjectId],
     identifyIds: [1],
   }])
-  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings, filamentColorOrder)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
   const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
 
@@ -801,7 +1780,7 @@ function buildSeal3mfZipPackage(
     'Metadata/project_settings.config': strToU8(projectSettings),
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
-  }, { level: 0 })
+  }, { level: 6 })
 }
 
 function buildSeal3mfModelXml(
@@ -846,11 +1825,16 @@ export function buildSealPreviewModelGltfBlob(
   artwork: PreviewModelArtworkInput & { strokeLoops?: VectorLoop[] },
   baseplateSettings: BaseplateSettings,
   sealSettings: SealSettings,
+  extrudeSettings?: ExtrudeSettings,
+  lineartSettings?: LineartSettings,
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   const sealHeightMm = sealSettings.sealHeightMm
   const engravingDiffMm = sealSettings.engravingHeightDiffMm
   const bodyHeightMm = Math.max(0, sealHeightMm - engravingDiffMm)
+  const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
+  const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
+  const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
   const baseColor = baseplateSettings.baseColor
 
   const meshes: Array<{ mesh: MeshData; name: string; color: string }> = []
@@ -873,7 +1857,9 @@ export function buildSealPreviewModelGltfBlob(
       lineMeshPixelsPerMm,
       bodyHeightMm,
       engravingDiffMm,
-      MIN_EXPORTABLE_LINE_WIDTH_MM,
+      minLineWidthMm,
+      expandStrokeMm,
+      shrinkStrokeMm,
     )
     meshes.push({ mesh: lineMesh, name: '线稿', color: baseColor })
 
@@ -885,7 +1871,9 @@ export function buildSealPreviewModelGltfBlob(
         lineMeshPixelsPerMm,
         bodyHeightMm,
         engravingDiffMm,
-        MIN_EXPORTABLE_LINE_WIDTH_MM,
+        minLineWidthMm,
+        expandStrokeMm,
+        shrinkStrokeMm,
       )
       meshes.push({ mesh: strokeMesh, name: '描边', color: baseColor })
     }
@@ -947,6 +1935,7 @@ export function buildPreviewModelGltfBlob(
   artwork: PreviewModelArtworkInput,
   baseplateSettings: BaseplateSettings,
   extrudeSettings: ExtrudeSettings,
+  lineartSettings?: LineartSettings,
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   // #region debug-point A:build-preview-model
@@ -964,7 +1953,9 @@ export function buildPreviewModelGltfBlob(
     lineMeshPixelsPerMm,
     extrudeSettings.lineHeightMm,
     extrudeSettings.lineThicknessMm,
-    MIN_EXPORTABLE_LINE_WIDTH_MM,
+    extrudeSettings.minLineWidthMm,
+    lineartSettings?.expandStrokeMm ?? 0,
+    lineartSettings?.shrinkStrokeMm ?? 0,
   )
 
   return buildGltfPreviewBlob(
@@ -1028,6 +2019,7 @@ export function buildCombined3mfPackage(
   extrudeSettings: ExtrudeSettings,
   printBedSettings: PrintBedSettings,
   threeMfProfile?: ThreeMfTemplateProfile | null,
+  lineartSettings?: LineartSettings,
 ) {
   // #region debug-point D:build-combined-3mf-package
   typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:start', msg: '[DEBUG] start buildCombined3mfPackage', data: { itemCount: items.length, printBedWidthMm: printBedSettings.widthMm, printBedDepthMm: printBedSettings.depthMm }, ts: Date.now() }) }).catch(() => {})
@@ -1086,7 +2078,9 @@ export function buildCombined3mfPackage(
       lineMeshPixelsPerMm,
       extrudeSettings.lineHeightMm,
       extrudeSettings.lineThicknessMm,
-      MIN_EXPORTABLE_LINE_WIDTH_MM,
+      extrudeSettings.minLineWidthMm,
+      lineartSettings?.expandStrokeMm ?? 0,
+      lineartSettings?.shrinkStrokeMm ?? 0,
     )
     const localBaseMesh = translateMesh(
       baseMesh,
@@ -1202,7 +2196,7 @@ export function buildCombined3mfPackage(
     'Metadata/slice_info.config': strToU8(sliceInfoConfig),
     'Metadata/filament_sequence.json': strToU8(filamentSequence),
     ...packageEntries,
-  }, { level: 0 })
+  }, { level: 6 })
 }
 
 function buildGltfPreviewBlob(
@@ -1620,9 +2614,10 @@ export function applyLineartStrokeEdit(
 export function layoutLineLoops(
   sourceLoops: VectorLoop[],
   settings: BaseplateSettings,
+  srcBounds?: { width: number; height: number; minX: number; minY: number },
 ) {
-  const bounds = getLoopBounds(sourceLoops)
   if (settings.template === 'outline') {
+    const bounds = getLoopBounds(sourceLoops)
     return {
       boardWidthMm: bounds.width,
       boardHeightMm: bounds.height,
@@ -1635,20 +2630,40 @@ export function layoutLineLoops(
   const margin = settings.marginMm + 0.6
   const safeWidth = Math.max(2, boardWidthMm - margin * 2)
   const safeHeight = Math.max(2, boardHeightMm - margin * 2)
+
+  const loopBounds = getLoopBounds(sourceLoops)
+  // 如果提供了源画布尺寸（含空白边），按源画布尺寸作为"内容外接矩形"缩放+居中，
+  // 保持源图的空白边比例（例如上方有 20% 空白，布局后仍保持 20%）。
+  // 否则退回紧外接框（旧行为）。
+  let contentBounds: { minX: number; minY: number; width: number; height: number }
+  if (srcBounds && srcBounds.width > 0 && srcBounds.height > 0) {
+    contentBounds = {
+      minX: srcBounds.minX,
+      minY: srcBounds.minY,
+      width: srcBounds.width,
+      height: srcBounds.height,
+    }
+  } else {
+    contentBounds = loopBounds
+  }
+
   const scale = Math.min(
-    safeWidth / Math.max(bounds.width, 0.001),
-    safeHeight / Math.max(bounds.height, 0.001),
+    safeWidth / Math.max(contentBounds.width, 0.001),
+    safeHeight / Math.max(contentBounds.height, 0.001),
   )
 
   const scaled = scaleLoops(sourceLoops, scale)
-  const scaledBounds = getLoopBounds(scaled)
-  const offsetX = (boardWidthMm - scaledBounds.width) * 0.5 - scaledBounds.minX
-  const offsetY = (boardHeightMm - scaledBounds.height) * 0.5 - scaledBounds.minY
+  const scaledContentW = contentBounds.width * scale
+  const scaledContentH = contentBounds.height * scale
+  const offsetX = (boardWidthMm - scaledContentW) * 0.5 - contentBounds.minX * scale
+  const offsetY = (boardHeightMm - scaledContentH) * 0.5 - contentBounds.minY * scale
+  const result = translateLoops(scaled, offsetX, offsetY)
+
 
   return {
     boardWidthMm,
     boardHeightMm,
-    lineLoops: translateLoops(scaled, offsetX, offsetY),
+    lineLoops: result,
   }
 }
 
@@ -1830,6 +2845,24 @@ export function mirrorLoopsHorizontally(loops: VectorLoop[]) {
   }))
 }
 
+/**
+ * 以 loops 紧 bbox 中心为 X 轴镜像中心，对 canvasBounds 做同样映射，
+ * 用于 mirrorLoopsHorizontally(source.loops) 后保持 srcBounds 与 loops 坐标一致。
+ */
+export function mirrorCanvasBoundsHorizontally(
+  loops: VectorLoop[],
+  canvasBounds: { minX: number; minY: number; width: number; height: number },
+) {
+  const bounds = getLoopBounds(loops) // 镜像前 loops（和 canvasBounds 匹配）的 bbox
+  const centerX = bounds.minX + bounds.width * 0.5
+  return {
+    minY: canvasBounds.minY,
+    height: canvasBounds.height,
+    width: canvasBounds.width,
+    minX: centerX * 2 - (canvasBounds.minX + canvasBounds.width),
+  }
+}
+
 export function getExportBaseName(name: string | undefined, fallback: string) {
   if (!name) return fallback
   return name.replace(/\.[^.]+$/, '') || fallback
@@ -1879,29 +2912,90 @@ async function buildImageLineart(
     bridgedMask = getAdaptivePreservedMask(targetMask, width, height)
     slimmedEdges = getAdaptiveLineMask(bridgedMask, width, height)
   }
-  // 线条加粗：基于「原始线宽」叠加膨胀。
+  // 等效 pixelsPerMm：内部画布最长边 → 最终 scale 到 DEFAULT_LINEART_MAX_MM(40mm)
+  // 与 extrudeMaskToMesh 中的单位换算保持一致：半径 = mm * pixelsPerMm * 0.5
+  const lineartPixelsPerMm = Math.max(width, height) / DEFAULT_LINEART_MAX_MM
+  // 加粗描边：基于「原始线宽」叠加膨胀。
   // 基准 = bridgedMask（保留原图实际线粗的掩码，不做骨架细化），
-  // strokeWidth=0 时直接输出基准 → 用户看到的就是原图粗细；
-  // strokeWidth>0 时对 bridgedMask 做膨胀，再并入 slimmedEdges 保留细枝末节。
-  const strokeRadius = Math.max(0, Math.round(settings.strokeWidth * 0.75))
+  // expandStrokeMm=0 时直接输出基准 → 用户看到的就是原图粗细；
+  // expandStrokeMm>0 时对 bridgedMask 做膨胀，再并入 slimmedEdges 保留细枝末节。
+  const strokeRadius = Math.max(0, Math.round(settings.expandStrokeMm * lineartPixelsPerMm * 0.5))
   const widened = strokeRadius
     ? orMasks(dilateMask(bridgedMask, width, height, strokeRadius), slimmedEdges, width, height)
     : bridgedMask
-  const fillRatio = getFilledPixelCount(widened) / Math.max(1, width * height)
+  // 缩小描边（腐蚀）：逐级降低 shrinkRadius，确保 mask 不完全消失。
+  // 如果一次性 shrink 过大导致 filledPixelCount 归零，就逐级回退到仍有像素的最大半径。
+  // 最终保底在 3D 导出阶段由 applyMinimumLineWidth 强制不低于 minLineWidthMm。
+  const maxShrinkRadius = Math.max(0, Math.round(settings.shrinkStrokeMm * lineartPixelsPerMm * 0.5))
+  let shrinkRadius = maxShrinkRadius
+  let shrunk = widened
+  const totalPx = Math.max(1, width * height)
+  if (shrinkRadius > 0) {
+    const widenedFillRatio = getFilledPixelCount(widened) / totalPx
+    while (shrinkRadius > 0) {
+      const candidate = erodeMask(widened, width, height, shrinkRadius)
+      const ratio = getFilledPixelCount(candidate) / totalPx
+      // 保留至少 shrink 前 15% 的填充像素，且绝对填充量仍有意义（至少 0.5% 画布），
+      // 避免把细线条完全腐蚀成空。
+      if (ratio >= Math.max(0.005, widenedFillRatio * 0.15)) {
+        shrunk = candidate
+        break
+      }
+      shrinkRadius -= 1
+    }
+    // 回退后如果所有半径都不行，就用 widened 本身（shrinkRadius=0，即不缩）
+    if (shrinkRadius === 0 && settings.shrinkStrokeMm > 0) {
+      shrunk = widened
+    }
+  }
+  const fillRatio = getFilledPixelCount(shrunk) / totalPx
   const despeckleStrength = fillRatio < 0.12
     ? Math.round(settings.despeckle * 0.3)
     : fillRatio < 0.2
       ? Math.round(settings.despeckle * 0.55)
       : settings.despeckle
-  const cleaned = despeckleStrength ? removeSmallComponents(widened, width, height, despeckleStrength) : widened
+  let cleaned = despeckleStrength ? removeSmallComponents(shrunk, width, height, despeckleStrength) : shrunk
+  // 最后兜底：如果 cleaned 已经完全空了但 widened 里还有东西，就回退到 widened（忽略本次 shrink）。
+  if (getFilledPixelCount(cleaned) === 0 && getFilledPixelCount(widened) > 0) {
+    cleaned = despeckleStrength ? removeSmallComponents(widened, width, height, despeckleStrength) : widened
+  }
 
   // 基础平滑
   const baseSmoothingVal = settings.smoothing
   const rawLoops = traceMaskToLoops(cleaned, width, height)
     .filter((loop) => Math.abs(loopArea(loop.points)) >= 3)
-  const loops = settings.bezierFitting
+  let loops = settings.bezierFitting
     ? smoothLoopsWithBezier(rawLoops, baseSmoothingVal, settings.bezierStrength)
     : smoothLoops(rawLoops, baseSmoothingVal)
+  // 终极兜底：平滑后一个 loop 都没了，就用 widened 直接重新 trace，保证至少有线稿输出
+  if (!loops.length) {
+    const fallbackMask = widened
+    const fallbackRawLoops = traceMaskToLoops(fallbackMask, width, height)
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= 3)
+    loops = settings.bezierFitting
+      ? smoothLoopsWithBezier(fallbackRawLoops, baseSmoothingVal, settings.bezierStrength)
+      : smoothLoops(fallbackRawLoops, baseSmoothingVal)
+  }
+  const loopBounds = getLoopBounds(loops)
+  const toMaxScale = DEFAULT_LINEART_MAX_MM / Math.max(loopBounds.width, loopBounds.height, 0.001)
+
+  // 与 loops 同一套坐标变换（先 normalize（translate -minX, -minY），再 scale 到最长边 40mm），
+  // 映射"完整源画布矩形（含空白边）"→ 供 layoutLineLoops 保持空白比例使用。
+  // loops 是 traceMaskToLoops 在 width × height（processingScale 缩小后的画布）上追踪的，
+  // 所以 canvas 的参考矩形就是 (0, 0, width, height)，与 loops 坐标完全对齐。
+  const canvasRectNorm = {
+    minX: 0 - loopBounds.minX,
+    minY: 0 - loopBounds.minY,
+    width,
+    height,
+  }
+  const canvasBounds = {
+    minX: canvasRectNorm.minX * toMaxScale,
+    minY: canvasRectNorm.minY * toMaxScale,
+    width: canvasRectNorm.width * toMaxScale,
+    height: canvasRectNorm.height * toMaxScale,
+  }
+
   const scaled = scaleLoopsToMaxDimension(normalizeLoops(loops), DEFAULT_LINEART_MAX_MM)
 
   return {
@@ -1909,6 +3003,7 @@ async function buildImageLineart(
     width: sourceImage.width,
     height: sourceImage.height,
     loops: scaled,
+    canvasBounds,
   }
 }
 
@@ -3166,6 +4261,8 @@ function extrudeMaskToMesh(
   zStart: number,
   height: number,
   minimumLineWidthMm = 0,
+  expandStrokeMm = 0,
+  shrinkStrokeMm = 0,
 ): MeshData {
   const raster = rasterizeLoopsToMask(loops, boardWidthMm, boardHeightMm, pixelsPerMm, 0)
   const mesh: MeshData = {
@@ -3176,8 +4273,41 @@ function extrudeMaskToMesh(
   if (height <= 0 || !loops.length) {
     return mesh
   }
+
+  // 1. 缩小描边（腐蚀），但做过度腐蚀防护：若 erode 后像素量不足 erode 前 10% 或接近清空，
+  //    则逐级缩小 shrinkRadius 直到仍然保留足够线条；极端情况下跳过腐蚀。
+  //    后续 applyMinimumLineWidth 会强制把残留线宽拉到 minimumLineWidthMm 下限。
+  let processedMask = raster.mask
+  const totalPx = raster.width * raster.height
+  const originalFillRatio = getFilledPixelCount(processedMask) / Math.max(1, totalPx)
+  if (shrinkStrokeMm > 0 && originalFillRatio > 0) {
+    const maxShrinkRadius = Math.max(0, Math.round(shrinkStrokeMm * pixelsPerMm * 0.5))
+    let shrinkRadius = maxShrinkRadius
+    let applied = false
+    while (shrinkRadius > 0) {
+      const candidate = erodeMask(raster.mask, raster.width, raster.height, shrinkRadius)
+      const ratio = getFilledPixelCount(candidate) / Math.max(1, totalPx)
+      // 至少保留 erode 前 10% 填充量，且自身仍 ≥ 0.2% 画布
+      if (ratio >= Math.max(0.002, originalFillRatio * 0.1)) {
+        processedMask = candidate
+        applied = true
+        break
+      }
+      shrinkRadius -= 1
+    }
+    // 所有半径都不行就不腐蚀，直接用原 mask（minimumLineWidth 保底）
+    void applied
+  }
+
+  // 2. 加粗描边（膨胀）
+  if (expandStrokeMm > 0) {
+    const expandRadius = Math.max(1, Math.round(expandStrokeMm * pixelsPerMm * 0.5))
+    processedMask = dilateMask(processedMask, raster.width, raster.height, expandRadius)
+  }
+
+  // 3. 始终保证最小线宽（缩小描边的下限——用户说"减了6mm也不能低于0.22mm"就在这里生效）
   const enforcedMask = applyMinimumLineWidth(
-    raster.mask,
+    processedMask,
     raster.width,
     raster.height,
     pixelsPerMm,
@@ -3233,144 +4363,77 @@ function extrudeMaskToMesh(
   )
   const z0 = zStart
   const z1 = zStart + height
-  const consumed = new Uint8Array(raster.width * raster.height)
 
+  // 逐像素生成顶面和底面（与边墙的逐像素扫描对齐，确保水密）。
+  // 不做矩形合并，因为合并后顶面/底面边界与逐像素边墙边界不匹配会产生开放边。
   for (let y = 0; y < raster.height; y += 1) {
     for (let x = 0; x < raster.width; x += 1) {
-      const cellIndex = y * raster.width + x
-      if (!isFilled(x, y) || consumed[cellIndex]) {
+      if (!isFilled(x, y)) {
         continue
       }
-
-      let rectWidth = 1
-      while (
-        x + rectWidth < raster.width
-        && isFilled(x + rectWidth, y)
-        && !consumed[y * raster.width + x + rectWidth]
-      ) {
-        rectWidth += 1
-      }
-
-      let rectHeight = 1
-      let canExtend = true
-      while (y + rectHeight < raster.height && canExtend) {
-        for (let scanX = x; scanX < x + rectWidth; scanX += 1) {
-          if (!isFilled(scanX, y + rectHeight) || consumed[(y + rectHeight) * raster.width + scanX]) {
-            canExtend = false
-            break
-          }
-        }
-        if (canExtend) {
-          rectHeight += 1
-        }
-      }
-
-      for (let fillY = y; fillY < y + rectHeight; fillY += 1) {
-        for (let fillX = x; fillX < x + rectWidth; fillX += 1) {
-          consumed[fillY * raster.width + fillX] = 1
-        }
-      }
-
-      const x0 = x * cellWidthMm
-      const x1 = (x + rectWidth) * cellWidthMm
-      const y0 = y * cellWidthMm
-      const y1 = (y + rectHeight) * cellWidthMm
-
+      const px0 = x * cellWidthMm
+      const px1 = (x + 1) * cellWidthMm
+      const py0 = y * cellWidthMm
+      const py1 = (y + 1) * cellWidthMm
+      // 顶面（朝 +Z）
       addQuad(
-        [x0, y0, z1],
-        [x1, y0, z1],
-        [x1, y1, z1],
-        [x0, y1, z1],
+        [px0, py0, z1],
+        [px1, py0, z1],
+        [px1, py1, z1],
+        [px0, py1, z1],
       )
+      // 底面（朝 -Z，翻转缠绕方向）
       addQuad(
-        [x0, y1, z0],
-        [x1, y1, z0],
-        [x1, y0, z0],
-        [x0, y0, z0],
+        [px0, py1, z0],
+        [px1, py1, z0],
+        [px1, py0, z0],
+        [px0, py0, z0],
       )
     }
   }
 
+  // 边墙逐像素生成（与顶面/底面的逐像素 quad 对齐，确保每条边被恰好 2 个三角形共享）
+  // 上边墙（y 方向边界，当前像素填充且上方未填充）
   for (let y = 0; y < raster.height; y += 1) {
-    let startX = -1
-    for (let x = 0; x <= raster.width; x += 1) {
-      const edgeFilled = x < raster.width && isFilled(x, y) && !isFilled(x, y - 1)
-      if (edgeFilled && startX < 0) {
-        startX = x
-      } else if (!edgeFilled && startX >= 0) {
-        const x0 = startX * cellWidthMm
-        const x1 = x * cellWidthMm
-        const y0 = y * cellWidthMm
-        addQuad(
-          [x0, y0, z0],
-          [x1, y0, z0],
-          [x1, y0, z1],
-          [x0, y0, z1],
-        )
-        startX = -1
+    for (let x = 0; x < raster.width; x += 1) {
+      if (isFilled(x, y) && !isFilled(x, y - 1)) {
+        const px0 = x * cellWidthMm
+        const px1 = (x + 1) * cellWidthMm
+        const py0 = y * cellWidthMm
+        addQuad([px0, py0, z0], [px1, py0, z0], [px1, py0, z1], [px0, py0, z1])
       }
     }
   }
-
+  // 下边墙（当前像素填充且下方未填充）
   for (let y = 0; y < raster.height; y += 1) {
-    let startX = -1
-    for (let x = 0; x <= raster.width; x += 1) {
-      const edgeFilled = x < raster.width && isFilled(x, y) && !isFilled(x, y + 1)
-      if (edgeFilled && startX < 0) {
-        startX = x
-      } else if (!edgeFilled && startX >= 0) {
-        const x0 = startX * cellWidthMm
-        const x1 = x * cellWidthMm
-        const y1 = (y + 1) * cellWidthMm
-        addQuad(
-          [x1, y1, z0],
-          [x0, y1, z0],
-          [x0, y1, z1],
-          [x1, y1, z1],
-        )
-        startX = -1
+    for (let x = 0; x < raster.width; x += 1) {
+      if (isFilled(x, y) && !isFilled(x, y + 1)) {
+        const px0 = x * cellWidthMm
+        const px1 = (x + 1) * cellWidthMm
+        const py1 = (y + 1) * cellWidthMm
+        addQuad([px1, py1, z0], [px0, py1, z0], [px0, py1, z1], [px1, py1, z1])
       }
     }
   }
-
+  // 左边墙（当前像素填充且左方未填充）
   for (let x = 0; x < raster.width; x += 1) {
-    let startY = -1
-    for (let y = 0; y <= raster.height; y += 1) {
-      const edgeFilled = y < raster.height && isFilled(x, y) && !isFilled(x - 1, y)
-      if (edgeFilled && startY < 0) {
-        startY = y
-      } else if (!edgeFilled && startY >= 0) {
-        const x0 = x * cellWidthMm
-        const y0 = startY * cellWidthMm
-        const y1 = y * cellWidthMm
-        addQuad(
-          [x0, y1, z0],
-          [x0, y0, z0],
-          [x0, y0, z1],
-          [x0, y1, z1],
-        )
-        startY = -1
+    for (let y = 0; y < raster.height; y += 1) {
+      if (isFilled(x, y) && !isFilled(x - 1, y)) {
+        const px0 = x * cellWidthMm
+        const py0 = y * cellWidthMm
+        const py1 = (y + 1) * cellWidthMm
+        addQuad([px0, py1, z0], [px0, py0, z0], [px0, py0, z1], [px0, py1, z1])
       }
     }
   }
-
+  // 右边墙（当前像素填充且右方未填充）
   for (let x = 0; x < raster.width; x += 1) {
-    let startY = -1
-    for (let y = 0; y <= raster.height; y += 1) {
-      const edgeFilled = y < raster.height && isFilled(x, y) && !isFilled(x + 1, y)
-      if (edgeFilled && startY < 0) {
-        startY = y
-      } else if (!edgeFilled && startY >= 0) {
-        const x1 = (x + 1) * cellWidthMm
-        const y0 = startY * cellWidthMm
-        const y1 = y * cellWidthMm
-        addQuad(
-          [x1, y0, z0],
-          [x1, y1, z0],
-          [x1, y1, z1],
-          [x1, y0, z1],
-        )
-        startY = -1
+    for (let y = 0; y < raster.height; y += 1) {
+      if (isFilled(x, y) && !isFilled(x + 1, y)) {
+        const px1 = (x + 1) * cellWidthMm
+        const py0 = y * cellWidthMm
+        const py1 = (y + 1) * cellWidthMm
+        addQuad([px1, py0, z0], [px1, py1, z0], [px1, py1, z1], [px1, py0, z1])
       }
     }
   }

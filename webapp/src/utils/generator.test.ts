@@ -40,7 +40,8 @@ const defaultLineartSettings: LineartSettings = {
   thresholdAuto: true,
   targetColor: '#000000',
   despeckle: 24,
-  strokeWidth: 0.4,
+  expandStrokeMm: 0.4,
+  shrinkStrokeMm: 0,
   smoothing: 36,
   invert: false,
   mirror: false,
@@ -104,6 +105,12 @@ describe('generator exports', () => {
           baseThicknessMm: 0.2,
           lineThicknessMm: 0.2,
           lineHeightMm: 0.2,
+          minLineWidthMm: 0.24,
+        },
+        {
+          ...defaultLineartSettings,
+          expandStrokeMm: 0,
+          shrinkStrokeMm: 0,
         },
       )
 
@@ -153,6 +160,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
     })
     const highSmoothArtwork = await processArtwork({
@@ -172,6 +180,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
     })
 
@@ -220,6 +229,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
     })
     const highSmoothArtwork = await processArtwork({
@@ -239,6 +249,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
     })
 
@@ -409,8 +420,8 @@ describe('generator exports', () => {
     expect(xml).toContain('<item objectid="4"/>')
   })
 
-  it('uses line height as z start and line thickness as z span in 3mf export', () => {
-    const packageBytes = build3mfPackage(
+  it('uses line height as z start and line thickness as z span in 3mf export', async () => {
+    const packageBytes = await build3mfPackage(
       {
         sourceKind: 'image',
         sourceWidth: 20,
@@ -452,6 +463,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       printBedSettings,
     )
@@ -465,8 +477,8 @@ describe('generator exports', () => {
     expect(modelXml).toContain('y="123"')
   })
 
-  it('writes default extruder assignments into bambu metadata for single exports', () => {
-    const packageBytes = build3mfPackage(
+  it('writes default extruder assignments into bambu metadata for single exports', async () => {
+    const packageBytes = await build3mfPackage(
       {
         sourceKind: 'image',
         sourceWidth: 20,
@@ -498,6 +510,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       printBedSettings,
     )
@@ -519,8 +532,8 @@ describe('generator exports', () => {
     expect(modelXml).toContain('<metadata name="Application">BambuStudio-01.10.00.89</metadata>')
   })
 
-  it('flips y coordinates for 3mf export to match the preview orientation', () => {
-    const packageBytes = build3mfPackage(
+  it('flips y coordinates for 3mf export to match the preview orientation', async () => {
+    const packageBytes = await build3mfPackage(
       {
         sourceKind: 'image',
         sourceWidth: 20,
@@ -562,6 +575,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       printBedSettings,
     )
@@ -642,6 +656,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       {
         widthMm: 200,
@@ -700,6 +715,7 @@ describe('generator exports', () => {
         baseThicknessMm: 0.2,
         lineThicknessMm: 0.2,
         lineHeightMm: 0.2,
+        minLineWidthMm: 0.24,
       },
       {
         widthMm: 120,

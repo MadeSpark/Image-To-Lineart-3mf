@@ -5,6 +5,8 @@ import { ThreeDModelViewer } from '@/components/ThreeDModelViewer'
 import type {
   BaseplateSettings,
   ExtrudeSettings,
+  LightReliefSettings,
+  LineartSettings,
   PreviewMode,
   ProcessedArtwork,
   SealSettings,
@@ -26,7 +28,9 @@ interface PreviewCanvasProps {
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   sealSettings?: SealSettings
+  lightReliefSettings?: LightReliefSettings
   workMode?: WorkMode
+  lineartSettings?: LineartSettings
   hasLineartEdits: boolean
   viewResetKey: string
   onApplyLineartStroke: (points: VectorPoint[], mode: 'brush' | 'eraser', radiusMm: number) => void
@@ -55,7 +59,9 @@ export function PreviewCanvas({
   baseplateSettings,
   extrudeSettings,
   sealSettings,
+  lightReliefSettings,
   workMode,
+  lineartSettings,
   hasLineartEdits,
   viewResetKey,
   onApplyLineartStroke,
@@ -157,9 +163,9 @@ export function PreviewCanvas({
   const displayColor = draftPickedColor ?? targetColor
   const vectorScene = useMemo(
     () => ((!isThreeDimensionalPreview && (artwork || sourceImage))
-      ? buildVectorPreviewScene(artwork, sourceImage, previewMode, baseplateSettings)
+      ? buildVectorPreviewScene(artwork, sourceImage, previewMode, baseplateSettings, workMode)
       : null),
-    [artwork, baseplateSettings, isThreeDimensionalPreview, previewMode, sourceImage],
+    [artwork, baseplateSettings, isThreeDimensionalPreview, previewMode, sourceImage, workMode],
   )
   const vectorViewBox = useMemo(
     () => (vectorScene
@@ -522,7 +528,9 @@ export function PreviewCanvas({
                 baseplateSettings={baseplateSettings}
                 extrudeSettings={extrudeSettings}
                 sealSettings={sealSettings}
+                lightReliefSettings={lightReliefSettings}
                 workMode={workMode}
+                lineartSettings={lineartSettings}
               />
             )}
 
@@ -733,6 +741,7 @@ function buildVectorPreviewScene(
   sourceImage: SourceImage | null,
   previewMode: PreviewMode,
   baseplateSettings: BaseplateSettings,
+  workMode?: WorkMode,
 ) {
   const layers: Array<{
     id: string
@@ -775,6 +784,14 @@ function buildVectorPreviewScene(
         path: loopsToSvgPath(artwork.strokeLoops),
       })
     }
+    if (workMode === 'light-relief' && artwork.lineLoopsB?.length) {
+      layers.push({
+        id: 'lineart-b',
+        fill: '#ef4444',
+        opacity: 0.55,
+        path: loopsToSvgPath(artwork.lineLoopsB),
+      })
+    }
   } else if (previewMode === '底板预览' && artwork) {
     layers.push({
       id: 'baseplate',
@@ -793,6 +810,14 @@ function buildVectorPreviewScene(
         fill: baseplateSettings.lineColor,
         opacity: 0.45,
         path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
+    if (workMode === 'light-relief' && artwork.lineLoopsB?.length) {
+      layers.push({
+        id: 'lineart-b-ghost',
+        fill: '#ef4444',
+        opacity: 0.35,
+        path: loopsToSvgPath(artwork.lineLoopsB),
       })
     }
   } else if (previewMode === 'DXF预览' && artwork) {
@@ -865,6 +890,14 @@ function buildVectorPreviewScene(
         id: 'stroke',
         fill: baseplateSettings.lineColor,
         path: loopsToSvgPath(artwork.strokeLoops),
+      })
+    }
+    if (workMode === 'light-relief' && artwork.lineLoopsB?.length) {
+      layers.push({
+        id: 'lineart-b',
+        fill: '#ef4444',
+        opacity: 0.55,
+        path: loopsToSvgPath(artwork.lineLoopsB),
       })
     }
   }
