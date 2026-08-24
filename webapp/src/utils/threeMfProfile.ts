@@ -1,5 +1,6 @@
 import { strFromU8, unzipSync } from 'fflate'
 import type { BaseplateSettings, PrintBedSettings, ThreeMfTemplateProfile } from '@/types/generator'
+import { assertThreeMfArchiveBudget, assertThreeMfFile, assertThreeMfMetadataSize } from './importLimits'
 
 const DEFAULT_TEMPLATE_URL = '/presets/default-print-profile.3mf'
 const DEFAULT_TEMPLATE_NAME = '预设参数.3mf'
@@ -24,6 +25,7 @@ export async function loadDefaultThreeMfTemplateProfile() {
 }
 
 export async function parseThreeMfTemplateFile(file: File) {
+  assertThreeMfFile(file)
   return parseThreeMfTemplateArchive(new Uint8Array(await file.arrayBuffer()), file.name)
 }
 
@@ -80,6 +82,10 @@ export function createFallbackThreeMfTemplateProfile(): ThreeMfTemplateProfile {
 
 export function parseThreeMfTemplateArchive(bytes: Uint8Array, sourceName: string): ThreeMfTemplateProfile {
   const files = unzipSync(bytes)
+  assertThreeMfArchiveBudget(files)
+  assertThreeMfMetadataSize(files['Metadata/project_settings.config'], 'Project settings')
+  assertThreeMfMetadataSize(files['Metadata/slice_info.config'], 'Slice information')
+  assertThreeMfMetadataSize(files['Metadata/filament_sequence.json'], 'Filament sequence')
   const projectSettings = parseProjectSettings(files['Metadata/project_settings.config'])
   const applicationName = extractApplicationName(files['3D/3dmodel.model'])
   const sliceInfoConfig = files['Metadata/slice_info.config']

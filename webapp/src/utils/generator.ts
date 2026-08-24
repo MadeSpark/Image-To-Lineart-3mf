@@ -1,4 +1,5 @@
 import { strToU8, zipSync } from 'fflate'
+import { IMPORT_LIMITS, assertDxfFile, assertImageDimensions, assertImageFile } from './importLimits'
 import type {
   BaseplateSettings,
   ExtrudeSettings,
@@ -134,8 +135,10 @@ interface BambuPlateAssignment {
 }
 
 export async function fileToSourceImage(file: File): Promise<SourceImage> {
+  assertImageFile(file)
   const dataUrl = await fileToDataUrl(file)
   const image = await loadHtmlImage(dataUrl)
+  assertImageDimensions(image.naturalWidth, image.naturalHeight)
 
   return {
     name: file.name,
@@ -146,11 +149,13 @@ export async function fileToSourceImage(file: File): Promise<SourceImage> {
 }
 
 export async function fileToImportedLineart(file: File): Promise<ImportedLineart> {
+  assertDxfFile(file)
   const text = await file.text()
   return parseDxfText(text, file.name)
 }
 
 export async function decodeGifFrames(file: File): Promise<GifFrameSource[]> {
+  assertImageFile(file)
   const Decoder = (globalThis as typeof globalThis & {
     ImageDecoder?: new (options: { data: ArrayBuffer; type: string }) => {
       tracks: {
@@ -173,6 +178,10 @@ export async function decodeGifFrames(file: File): Promise<GifFrameSource[]> {
   })
   await decoder.tracks.ready
   const frameCount = decoder.tracks.selectedTrack?.frameCount ?? 1
+  if (frameCount > IMPORT_LIMITS.maxGifFrames) {
+    decoder.close?.()
+    throw new Error(`GIF exceeds the ${IMPORT_LIMITS.maxGifFrames} frame limit.`)
+  }
   const frames: GifFrameSource[] = []
   const baseName = getExportBaseName(file.name, 'gif-frame')
 
@@ -181,6 +190,7 @@ export async function decodeGifFrames(file: File): Promise<GifFrameSource[]> {
     const bitmap = result.image as VideoFrame & { width?: number; height?: number }
     const width = bitmap.displayWidth || bitmap.codedWidth || bitmap.width || 1
     const height = bitmap.displayHeight || bitmap.codedHeight || bitmap.height || 1
+    assertImageDimensions(width, height)
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -1066,7 +1076,11 @@ export function buildLoopDxf(loops: VectorLoop[], layerName = 'LINEART') {
 
 export function parseDxfText(text: string, name = 'imported.dxf'): ImportedLineart {
   const pairs = splitDxfPairs(text)
+  if (pairs.length > IMPORT_LIMITS.maxDxfPairs) {
+    throw new Error('DXF contains too many entities.')
+  }
   const loops: VectorLoop[] = []
+  let vertexCount = 0
 
   for (let index = 0; index < pairs.length; index += 1) {
     const [code, value] = pairs[index]
@@ -1086,6 +1100,8 @@ export function parseDxfText(text: string, name = 'imported.dxf'): ImportedLinea
           currentX = Number(nextValue)
         } else if (nextCode === 20 && currentX !== null) {
           points.push({ x: currentX, y: Number(nextValue) })
+          vertexCount += 1
+          if (vertexCount > IMPORT_LIMITS.maxDxfVertices) throw new Error('DXF contains too many vertices.')
           currentX = null
         }
       }
@@ -1116,6 +1132,8 @@ export function parseDxfText(text: string, name = 'imported.dxf'): ImportedLinea
             if (vertexCode === 20) vertexY = Number(vertexValue)
           }
           points.push({ x: vertexX, y: vertexY })
+          vertexCount += 1
+          if (vertexCount > IMPORT_LIMITS.maxDxfVertices) throw new Error('DXF contains too many vertices.')
           continue
         }
         if (nextCode === 0 && nextValue === 'SEQEND') {
@@ -1193,9 +1211,6 @@ export async function build3mfPackage(
   await onProgress?.('正在生成 3MF XML...')
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
   const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
-  // #region debug-point B:build-3mf-model-xml
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'B', location: 'generator.ts:build3mfPackage:modelXml', msg: '[DEBUG] built single 3mf model xml', data: { modelXmlLength: modelXml.length, baseVertices: baseMesh.vertices.length, baseTriangles: baseMesh.triangles.length, lineVertices: lineMesh.vertices.length, lineTriangles: lineMesh.triangles.length }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -1938,9 +1953,6 @@ export function buildPreviewModelGltfBlob(
   lineartSettings?: LineartSettings,
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
-  // #region debug-point A:build-preview-model
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'A', location: 'generator.ts:buildPreviewModelGltfBlob:start', msg: '[DEBUG] start buildPreviewModelGltfBlob', data: { boardWidthMm: artwork.boardWidthMm, boardHeightMm: artwork.boardHeightMm, sourcePixelsPerMm: artwork.pixelsPerMm, previewPixelsPerMm: lineMeshPixelsPerMm, baseLoopCount: artwork.baseLoops.length, lineLoopCount: artwork.lineLoops.length }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const baseMesh = extrudeLoopsToMesh(
     keepOuterLoops(artwork.baseLoops),
     0,
@@ -2021,9 +2033,6 @@ export function buildCombined3mfPackage(
   threeMfProfile?: ThreeMfTemplateProfile | null,
   lineartSettings?: LineartSettings,
 ) {
-  // #region debug-point D:build-combined-3mf-package
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:start', msg: '[DEBUG] start buildCombined3mfPackage', data: { itemCount: items.length, printBedWidthMm: printBedSettings.widthMm, printBedDepthMm: printBedSettings.depthMm }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const totalAreaMm = items.reduce((sum, item) => sum + (item.artwork.boardWidthMm * item.artwork.boardHeightMm), 0)
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -2108,9 +2117,6 @@ export function buildCombined3mfPackage(
     const lineTransform = format3mfTransform(centerX, centerY, lineCenterZ)
     const baseMatrix = format4x4Matrix(centerX, centerY, baseCenterZ)
     const lineMatrix = format4x4Matrix(centerX, centerY, lineCenterZ)
-    // #region debug-point D:combined-item-mesh
-    typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:item', msg: '[DEBUG] prepared combined 3mf item meshes', data: { itemId: item.id, itemName: item.name, plateIndex: placement.plateIndex, buildOffsetX: buildOffset.xMm, buildOffsetY: buildOffset.yMm, boardWidthMm: item.artwork.boardWidthMm, boardHeightMm: item.artwork.boardHeightMm, lineMeshPixelsPerMm, baseVertices: localBaseMesh.vertices.length, baseTriangles: localBaseMesh.triangles.length, lineVertices: localLineMesh.vertices.length, lineTriangles: localLineMesh.triangles.length }, ts: Date.now() }) }).catch(() => {})
-    // #endregion
 
     packageEntries[`3D/Objects/object_${itemIndex + 1}.model`] = strToU8(
       buildStandalone3mfObjectModel(localBaseMesh, localLineMesh, baseObjectId, lineObjectId),
@@ -2170,18 +2176,12 @@ export function buildCombined3mfPackage(
   })
 
   const modelXml = buildCombined3mfModelXml(applicationName, resourceLines, buildLines)
-  // #region debug-point D:combined-model-xml
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:modelXml', msg: '[DEBUG] built combined 3mf model xml', data: { modelXmlLength: modelXml.length, resourceCount: resourceLines.length, buildItemCount: buildLines.length, plateCount: printBedLayout.plates.length }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const modelSettings = buildBambuModelSettingsConfig(
     modelSettingsObjects,
     Array.from(plateAssignments.entries())
       .sort(([left], [right]) => left - right)
       .map(([plateIndex, assignment]) => ({ plateIndex, objectIds: assignment.objectIds, identifyIds: assignment.identifyIds })),
   )
-  // #region debug-point D:combined-model-settings
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'D', location: 'generator.ts:buildCombined3mfPackage:modelSettings', msg: '[DEBUG] built combined 3mf model settings', data: { modelSettingsLength: modelSettings.length, plateAssignments: Array.from(plateAssignments.entries()).sort(([left], [right]) => left - right).map(([plateIndex, assignment]) => ({ plateIndex, objectCount: assignment.objectIds.length, firstIdentifyId: assignment.identifyIds[0] ?? null, lastIdentifyId: assignment.identifyIds[assignment.identifyIds.length - 1] ?? null })) }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
   const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, printBedLayout.plates.length)
@@ -2319,9 +2319,6 @@ function buildGltfPreviewBlob(
   })
 
   const combinedBuffer = concatUint8Arrays(chunks)
-  // #region debug-point A:gltf-buffer-ready
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'A', location: 'generator.ts:buildGltfPreviewBlob:bufferReady', msg: '[DEBUG] gltf buffer ready', data: { partCount: parts.length, combinedBufferBytes: combinedBuffer.byteLength, meshVertices: parts.map((part) => ({ name: part.name, vertices: part.mesh.vertices.length, triangles: part.mesh.triangles.length })) }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   const gltf = {
     asset: {
       version: '2.0',
@@ -5013,17 +5010,13 @@ function concatUint8Arrays(chunks: Uint8Array[]) {
 }
 
 function bytesToBase64(bytes: Uint8Array) {
-  // #region debug-point C:bytes-to-base64-start
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'C', location: 'generator.ts:bytesToBase64:start', msg: '[DEBUG] start bytesToBase64', data: { byteLength: bytes.byteLength }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
-  let binary = ''
-  bytes.forEach((value) => {
-    binary += String.fromCharCode(value)
-  })
-  // #region debug-point C:bytes-to-base64-finish
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'C', location: 'generator.ts:bytesToBase64:finish', msg: '[DEBUG] finish bytesToBase64 string accumulation', data: { binaryLength: binary.length }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
-  return btoa(binary)
+  const chunkSize = 0x8000
+  const chunks: string[] = []
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length))
+    chunks.push(String.fromCharCode(...chunk))
+  }
+  return btoa(chunks.join(''))
 }
 
 function hexColorToLinearFactor(color: string) {

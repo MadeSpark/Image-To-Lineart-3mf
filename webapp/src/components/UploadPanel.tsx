@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, Copy, FileCode2, ImagePlus, LayoutGrid, Load
 import { useEffect, useRef, useState } from 'react'
 import type { BatchSourceItem, ImportedLineart, LineartSettings, SourceImage, SourceKind, WorkMode } from '@/types/generator'
 import { AI_PROMPT_TEXT, autoCropFilmstrip, copyTextToClipboard, dataUrlToFile, downloadDataUrl, mergeImagesToFilmstrip } from '@/utils/filmstrip'
+import { assertImageFile } from '@/utils/importLimits'
 
 interface UploadPanelProps {
   entries: BatchSourceItem[]
@@ -98,6 +99,7 @@ export function UploadPanel({
   const handleImportFilmstrip = async (file: File) => {
     setAiAction('importing')
     try {
+      assertImageFile(file)
       const dataUrl = await readFileAsDataUrl(file)
       const cropped = await autoCropFilmstrip(dataUrl)
       if (!cropped.length) {

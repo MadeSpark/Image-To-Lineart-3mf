@@ -45,6 +45,7 @@ import {
   summarizeThreeMfTemplateProfile,
 } from '@/utils/threeMfProfile'
 import { calculateRectangleRatioLayout } from '@/utils/baseplate'
+import { assertBatchSize, assertSettingsFile, assertSettingsPayload } from '@/utils/importLimits'
 
 interface GifImportQueueItem {
   id: string
@@ -449,6 +450,7 @@ export default function Home() {
 
   const handleUploadImages = async (files: File[]) => {
     try {
+      assertBatchSize(files)
       const nextEntries: BatchSourceItem[] = []
       const pendingGifs: GifImportQueueItem[] = []
 
@@ -858,7 +860,10 @@ export default function Home() {
 
   const handleImportSettings = async (file: File) => {
     try {
-      const payload = extractImportedSettingsPayload(JSON.parse(await file.text()))
+      assertSettingsFile(file)
+      const imported = JSON.parse(await file.text())
+      assertSettingsPayload(imported)
+      const payload = extractImportedSettingsPayload(imported)
       setLineartOverrides({})
       applyImportedSettings(payload)
       window.alert([
@@ -1523,9 +1528,6 @@ async function dataUrlToU8(dataUrl: string) {
 }
 
 function normalizeErrorMessage(caughtError: unknown, fallback: string) {
-  // #region debug-point E:normalize-error-message
-  typeof fetch === 'function' && fetch('http://127.0.0.1:7777/event', { method: 'POST', body: JSON.stringify({ sessionId: 'invalid-string-length', runId: 'post-fix', hypothesisId: 'E', location: 'Home.tsx:normalizeErrorMessage', msg: '[DEBUG] normalize error message', data: { fallback, error: caughtError instanceof Error ? caughtError.message : String(caughtError) }, ts: Date.now() }) }).catch(() => {})
-  // #endregion
   return caughtError instanceof Error ? caughtError.message : fallback
 }
 

@@ -15,9 +15,58 @@
 interface Env {
   VISITOR_COUNT: KVNamespace
   ALLOWED_ORIGINS: string
+  VISITOR_COUNTER: DurableObjectNamespace
 }
 
 const COUNT_KEY = 'count'
+const VISIT_COOLDOWN_SECONDS = 15 * 60
+
+function isAllowedOrigin(allowedOrigins: string, origin: string | null) {
+  return Boolean(origin) && allowedOrigins.split(',').map((entry) => entry.trim()).includes(origin!)
+}
+
+async function hashClientIp(request: Request) {
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+  const bytes = new TextEncoder().encode(ip)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export class VisitorCounter {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const count = (await this.state.storage.get<number>(COUNT_KEY)) ?? 0
+    if (url.pathname === '/count') {
+      return Response.json({ count })
+    }
+    if (url.pathname !== '/visit') return Response.json({ error: 'not found' }, { status: 404 })
+
+    const clientKey = request.headers.get('X-Visitor-Key')
+    if (!clientKey) return Response.json({ error: 'missing visitor key' }, { status: 400 })
+    const visitKey = `visit:${clientKey}`
+    if (await this.state.storage.get(visitKey)) {
+      return Response.json({ count })
+    }
+    const next = count + 1
+    await this.state.storage.put({ [COUNT_KEY]: next, [visitKey]: Date.now() })
+    await this.state.storage.setAlarm(Date.now() + VISIT_COOLDOWN_SECONDS * 1000)
+    return Response.json({ count: next })
+  }
+
+  async alarm(): Promise<void> {
+    const entries = await this.state.storage.list<number>({ prefix: 'visit:' })
+    const expiry = Date.now() - VISIT_COOLDOWN_SECONDS * 1000
+    const expired = Array.from(entries.entries())
+      .filter(([, recordedAt]) => recordedAt < expiry)
+      .map(([key]) => key)
+    if (expired.length) await this.state.storage.delete(expired)
+    if ((await this.state.storage.list({ prefix: 'visit:', limit: 1 })).size) {
+      await this.state.storage.setAlarm(Date.now() + VISIT_COOLDOWN_SECONDS * 1000)
+    }
+  }
+}
 
 function buildCorsHeaders(allowedOrigins: string, requestOrigin: string | null): HeadersInit {
   const list = allowedOrigins
@@ -51,6 +100,10 @@ export default {
     const origin = request.headers.get('Origin')
     const headers = buildCorsHeaders(env.ALLOWED_ORIGINS ?? '', origin)
 
+    if (!isAllowedOrigin(env.ALLOWED_ORIGINS ?? '', origin)) {
+      return jsonResponse({ error: 'origin not allowed' }, headers, 403)
+    }
+
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers })
     }
@@ -60,6 +113,19 @@ export default {
     }
 
     const url = new URL(request.url)
+
+    if (url.pathname === '/health') {
+      return jsonResponse({ ok: true, service: 'visitor-counter' }, headers)
+    }
+
+    if (url.pathname === '/visit' || url.pathname === '/count' || url.pathname === '/') {
+      const id = env.VISITOR_COUNTER.idFromName('global')
+      const response = await env.VISITOR_COUNTER.get(id).fetch(new Request(
+        new URL(url.pathname === '/' ? '/visit' : url.pathname, request.url),
+        { headers: { 'X-Visitor-Key': await hashClientIp(request) } },
+      ))
+      return new Response(response.body, { status: response.status, headers })
+    }
 
     if (url.pathname === '/health') {
       return jsonResponse({ ok: true, service: 'visitor-counter' }, headers)

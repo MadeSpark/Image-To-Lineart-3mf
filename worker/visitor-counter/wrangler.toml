@@ -12,6 +12,14 @@ compatibility_date = "2024-09-01"
 binding = "VISITOR_COUNT"
 id = "0c8ac6229e2b48699c7a4767a69814a5"
 
+[[durable_objects.bindings]]
+name = "VISITOR_COUNTER"
+class_name = "VisitorCounter"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["VisitorCounter"]
+
 # 允许调用本 Worker 的前端域名（逗号分隔，不要带尾随斜杠）。
 # 包含本地开发地址 + webapp 公网部署域名。
 [vars]
