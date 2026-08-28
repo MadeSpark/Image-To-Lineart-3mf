@@ -234,11 +234,16 @@ describe('generator exports', () => {
     const reversed = await parseZRanges(true)
     // 底座（背景下层）始终保留，为浮雕提供贴热床实心基座
     expect(reversed['背景下层']).toEqual({ minZ: 0, maxZ: 0.6 })
-    // 浮雕保持正向朝向（bumpy 顶面朝上），Z 范围与正常模式一致
-    expect(reversed['B面透光浮雕'].minZ).toBeCloseTo(0.6, 5)
-    expect(reversed['B面透光浮雕'].maxZ).toBeCloseTo(0.725, 5)
-    // 顶盖（背景顶层）不再打印——让浮雕 bumpy 顶面直接暴露
+    // 反向堆叠：浮雕层序颠倒——原本的平面底（faceBZMm=0.6）翻到顶部 bFaceTopMm=0.8，
+    // 起伏面转而朝向背景下层。均匀灰度下 avgH=0.125，故区间为 [0.8-0.125, 0.8] = [0.675, 0.8]
+    expect(reversed['B面透光浮雕'].minZ).toBeCloseTo(0.675, 5)
+    expect(reversed['B面透光浮雕'].maxZ).toBeCloseTo(0.8, 5)
+    // 反向后浮雕顶面已占满 bFaceTopMm，背景顶层不再打印（避免叠成厚重挡光层）
     expect(reversed['背景顶层']).toBeUndefined()
+    // 反向区间的厚度应与正向一致（只是位置挪到区间顶部），证明确实是"翻转"而非缩放
+    const normalThickness = normal['B面透光浮雕'].maxZ - normal['B面透光浮雕'].minZ
+    const reversedThickness = reversed['B面透光浮雕'].maxZ - reversed['B面透光浮雕'].minZ
+    expect(reversedThickness).toBeCloseTo(normalThickness, 5)
   })
 
   it('reduces wrinkle points more aggressively as smoothing increases', async () => {

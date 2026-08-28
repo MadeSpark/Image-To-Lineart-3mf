@@ -136,8 +136,12 @@ export type LightReliefBFaceMode = 'auto' | 'lineart' | 'halftone'
  * - bFaceMode: B 面处理模式（默认 'auto'）
  * - bFaceExposure: halftone 模式下的曝光值（0~200，100 为原始亮度），用于调整图片过暗时的厚度分布
  * - bFaceInvert: halftone 模式下是否反转灰度（深色变浅、浅色变深）
- * - bFaceReverseStack: halftone 模式下 B 面浮雕暴露——省略背景顶盖层，让浮雕 bumpy 顶面
- *   直接暴露在模型最顶部以提升透光率。浮雕始终保持正向朝向（底面固定、顶面随灰度变化）。
+ * - bFaceReverseStack: halftone 模式下 B 面浮雕「反向堆叠」——把浮雕在自己的 Z 区间内层序
+ *   颠倒（原本 1→3 层打印 a,b,c，开启后变成 c,b,a）。正向是底面固定、顶面随灰度起伏；
+ *   反向则底面随灰度起伏（承载图像细节的那一面贴近背景下层，透光效果更佳）、顶面固定为
+ *   满铺平面（即翻转前的浮雕平面底）。同时省略背景顶盖层，避免与翻转后的满铺平面顶
+ *   叠成厚重挡光层。
+ *   注意：反向后起伏面的谷底与背景下层之间会留空隙（悬空），打印需加支撑或调小 B 面高度。
  * 其余区域一律用耗材2（白）填充。
  */
 export interface LightReliefSettings {

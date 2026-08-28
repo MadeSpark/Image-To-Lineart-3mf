@@ -603,8 +603,12 @@ function buildHalftoneHeightMapFromImageData(
  * 根据高度图生成透光浮雕 B 面闭合网格（拓竹式结构）。
  *
  * - 厚度沿 Z 轴方向：zStart（底，固定）→ zStart + 高度图*maxHeightMm（顶面，随灰度变化）。
- * - reverseStack 参数保留但当前调用方始终传 false——浮雕保持正向朝向（bumpy 顶面朝上），
- *   以确保透光浮雕表面暴露在模型顶部，提升透光率。
+ * - reverseStack=true（反向堆叠）：把浮雕在自己的 Z 区间内**层序颠倒**——
+ *     正向：底面固定 zStart（满铺平面，贴着背景下层）→ 顶面随灰度起伏（bumpy）
+ *     反向：底面随灰度起伏（bumpy，朝向背景下层）→ 顶面固定 zStart+maxHeightMm（满铺平面）
+ *   也就是「原本 1→3 层打印 a,b,c，反向后变成 c,b,a」：浮雕原本的平面底翻到顶部，
+ *   bumpy（承载图像细节、线条细的那一面）转而贴近背景下层，透光效果更佳。
+ *   注意：反向后 bumpy 面的谷底与背景下层之间会留空隙（悬空），属独立问题另行处理。
  * - 生成完整闭合体（顶面 + 底面 + 四周边墙），保证切片器识别为水密模型。
  * - flipY=true 时：对 Y 轴应用翻转（y' = boardHeightMm - y），使 halftone 与 3MF 导出时经过 flipLoopsForModelExport 的线稿对齐。
  *   flipY=false 时：Y 不翻转，直接使用 heightMap 的原始方向（y=0 对应 worldY=0），用于内部预览。
@@ -1490,10 +1494,12 @@ export async function buildSeal3mfPackage(
  *
  * 耗材槽位与掐丝模式相反：耗材1=线稿（黑），耗材2=背景（白）。
  *
- * 开启 bFaceReverseStack（浮雕暴露）时：
- *   - 背景下半 [0, faceBZMm] 始终保留（实心底座，贴热床，为浮雕提供基座避免悬空）
- *   - B 面浮雕保持正向朝向（底面固定在 faceBZMm、顶面随灰度变化），bumpy 顶面完全暴露
- *   - 背景顶部 [bFaceTopMm, totalHeightMm] 不再生成——让浮雕 bumpy 顶面直接暴露，提升透光率
+ * 开启 bFaceReverseStack（反向堆叠）时：
+ *   - 背景下半 [0, faceBZMm] 始终保留（实心底座，贴热床，为浮雕提供基座）
+ *   - B 面浮雕**层序颠倒**：bumpy 面朝向背景下层（线条细的那一面贴近底层，透光效果更佳），
+ *     原本贴着背景下层的平面底翻到 Z=bFaceTopMm 成为满铺平面顶
+ *   - 背景顶部 [bFaceTopMm, totalHeightMm] 不再生成——反向后浮雕的平面顶已在该位置，
+ *     再叠一层实心背景会形成厚重的挡光实心层；省略后浮雕直接构成模型最顶部
  */
 export async function buildLightRelief3mfPackage(
   artwork: ProcessedArtwork,
@@ -1525,8 +1531,8 @@ export async function buildLightRelief3mfPackage(
 
   const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
   const bFaceTopMm = faceBZMm + faceBHeightMm
-  // 浮雕暴露：浮雕保持正向朝向（bumpy 顶面朝上），底座始终保留；
-  // 背景顶层（顶盖）省略——让浮雕 bumpy 顶面直接暴露，提升透光率。
+  // 反向堆叠：浮雕层序颠倒（bumpy 面朝向背景下层），底座始终保留；
+  // 背景顶层（顶盖）省略——避免与翻转后浮雕的满铺平面顶叠成厚重挡光层。
   const reverseStack = lightReliefSettings.bFaceReverseStack ?? false
   const outerBaseLoops = keepOuterLoops(flippedBaseLoops)
 
@@ -1560,7 +1566,7 @@ export async function buildLightRelief3mfPackage(
           artwork.boardWidthMm,
           artwork.boardHeightMm,
           true, // flipY
-          false, // 浮雕始终保持正向朝向（bumpy 顶面朝上），不翻转表面
+          reverseStack, // 反向堆叠：浮雕层序颠倒（见函数注释）
         ),
         offsetX,
         offsetY,
@@ -1612,7 +1618,8 @@ export async function buildLightRelief3mfPackage(
     }
   }
 
-  // 3. 背景顶部 [bFaceTopMm, totalHeightMm]（耗材2）。浮雕暴露模式时跳过——让浮雕 bumpy 顶面直接暴露。
+  // 3. 背景顶部 [bFaceTopMm, totalHeightMm]（耗材2）。反向堆叠时跳过——浮雕翻转后的
+  //    满铺平面顶已占据该位置，再叠一层实心背景会形成厚重挡光层。
   await onProgress?.('正在生成背景顶层网格...')
   const topHeightMm = totalHeightMm - bFaceTopMm
   if (topHeightMm > 0 && !reverseStack) {
@@ -1721,7 +1728,7 @@ export function buildLightReliefPreviewModelGltfBlob(
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
   const bFaceTopMm = faceBZMm + faceBHeightMm
-  // 浮雕暴露：浮雕保持正向朝向（bumpy 顶面朝上），底座始终保留；
+  // 反向堆叠：浮雕层序颠倒（bumpy 面朝向背景下层），底座始终保留；
   // 背景顶层（顶盖）省略（与 3MF 导出保持一致）
   const reverseStack = lightReliefSettings.bFaceReverseStack ?? false
   const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
@@ -1752,7 +1759,7 @@ export function buildLightReliefPreviewModelGltfBlob(
           artwork.boardWidthMm,
           artwork.boardHeightMm,
           false, // flipY
-          false, // 浮雕始终保持正向朝向（bumpy 顶面朝上），不翻转表面
+          reverseStack, // 反向堆叠：浮雕层序颠倒（见函数注释）
         ),
         name: 'B面透光浮雕',
         color: baseplateSettings.baseColor,

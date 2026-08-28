@@ -163,9 +163,9 @@ export function LightReliefPanel({
             />
           </label>
 
-          {/* 浮雕暴露开关 */}
+          {/* 反向堆叠开关 */}
           <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
-            <span>B 面浮雕暴露（省略顶盖）</span>
+            <span>反向堆叠（浮雕翻转 + 省略顶盖）</span>
             <input
               type="checkbox"
               checked={settings.bFaceReverseStack}
@@ -175,7 +175,10 @@ export function LightReliefPanel({
           </label>
           {settings.bFaceReverseStack && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
-              已开启浮雕暴露：原 B 面顶盖层（背景顶层）不再打印，浮雕 bumpy 顶面直接暴露在模型最顶部，透光率更佳。底座（背景下层）保留为贴热床实心基座。模型总高度可能减少。
+              已开启反向堆叠：浮雕层序颠倒——原本贴着背景下层的平面底翻到顶部，
+              承载图像细节的起伏面（线条细的那一面）转为贴近背景下层，透光效果更佳；
+              背景顶层不再打印，避免与翻转后的满铺平面顶叠成厚重挡光层。
+              注意：起伏面的谷底与背景下层之间会留空隙（悬空），需自行加支撑或调小 B 面高度。
             </div>
           )}
 
