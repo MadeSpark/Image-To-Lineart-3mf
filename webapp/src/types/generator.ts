@@ -1,6 +1,14 @@
 export type PreviewMode = '原图' | '线稿' | 'DXF预览' | '底板预览' | '分层预览' | '3D预览'
 export type BaseTemplate = 'outline' | 'rectangle' | 'circle'
 export type RectangleSizeMode = 'ratio' | 'manual'
+/**
+ * 底板图片放置规则：
+ * - 'fit': 等比缩放完整显示在安全边距内（默认，原有行为）
+ * - 'center': 保持原比例，在不被裁剪、不超过画布（画板）的情况下最大化居中（忽略安全边距）
+ * - 'stretch': 非等比拉伸铺满安全边距内区域（比例可能变形）
+ * - 'crop': 从图片中间裁剪一块与安全区等比的区域，等比缩放铺满安全区（不变形）
+ */
+export type ImagePlacement = 'fit' | 'center' | 'stretch' | 'crop'
 export type SourceKind = 'image' | 'dxf'
 export type WorkMode = 'filigree' | 'seal' | 'light-relief'
 export type CarvingMode = 'intaglio' | 'relief'
@@ -73,6 +81,7 @@ export interface BaseplateSettings {
   rectangleScalePercent: number
   diameterMm: number
   marginMm: number
+  imagePlacement: ImagePlacement
   lineColor: string
   baseColor: string
 }
@@ -127,6 +136,8 @@ export type LightReliefBFaceMode = 'auto' | 'lineart' | 'halftone'
  * - bFaceMode: B 面处理模式（默认 'auto'）
  * - bFaceExposure: halftone 模式下的曝光值（0~200，100 为原始亮度），用于调整图片过暗时的厚度分布
  * - bFaceInvert: halftone 模式下是否反转灰度（深色变浅、浅色变深）
+ * - bFaceReverseStack: halftone 模式下 B 面浮雕暴露——省略背景顶盖层，让浮雕 bumpy 顶面
+ *   直接暴露在模型最顶部以提升透光率。浮雕始终保持正向朝向（底面固定、顶面随灰度变化）。
  * 其余区域一律用耗材2（白）填充。
  */
 export interface LightReliefSettings {
@@ -138,6 +149,7 @@ export interface LightReliefSettings {
   bFaceMode: LightReliefBFaceMode
   bFaceExposure: number
   bFaceInvert: boolean
+  bFaceReverseStack: boolean
 }
 
 export interface ThreeMfTemplateProfile {

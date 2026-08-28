@@ -21,6 +21,13 @@ const SHARED_STORAGE_KEY = 'lineart-baseplate-generator-settings-shared'
 const DEFAULT_PREVIEW_MODE: PreviewMode = '分层预览'
 const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板预览', '分层预览', '3D预览']
 
+// 设置快照 schema 版本：用于一次性迁移历史 localStorage 快照。
+const SCHEMA_VERSION_KEY = 'lineart-baseplate-generator-settings-schema-version'
+const SETTINGS_SCHEMA_VERSION = 3
+// 旧版线条平滑默认值。迁移时若快照仍为此值，视作"用户未修改过"，回落到新默认值。
+const LEGACY_SMOOTHING_DEFAULT = 36
+const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY] as const
+
 export const defaultLineartSettings: LineartSettings = {
   detail: 100,
   threshold: 160,
@@ -29,10 +36,13 @@ export const defaultLineartSettings: LineartSettings = {
   despeckle: 24,
   expandStrokeMm: 0,
   shrinkStrokeMm: 0,
-  smoothing: 36,
+  smoothing: 10,
   invert: false,
   mirror: false,
-  autoOptimize: true,
+  // 2026-08-27：移除"根据图片分辨率自动调整 detail/smoothing 等"功能。
+// 已删除 calculateAutoLineartParams 与 Home.tsx 的两处调用，并从 UI 移除"自动识别优化"开关。
+// 老用户带 autoOptimize=true 的快照强制改为 false，避免迁过去又被自动调参覆盖。
+  autoOptimize: false,
   protectFineDetail: true,
   uploadPreprocess: true,
   bezierFitting: true,
@@ -53,6 +63,7 @@ export const defaultBaseplateSettings: BaseplateSettings = {
   rectangleScalePercent: 100,
   diameterMm: 50,
   marginMm: 4,
+  imagePlacement: 'fit',
   lineColor: '#111111',
   baseColor: '#f3f6fb',
 }
@@ -66,6 +77,7 @@ export const defaultSealBaseplateSettings: BaseplateSettings = {
   rectangleScalePercent: 100,
   diameterMm: 30,
   marginMm: 4,
+  imagePlacement: 'fit',
   lineColor: '#111111',
   baseColor: '#f3f6fb',
 }
@@ -80,6 +92,7 @@ export const defaultLightReliefBaseplateSettings: BaseplateSettings = {
   rectangleScalePercent: 100,
   diameterMm: 50,
   marginMm: 4,
+  imagePlacement: 'fit',
   // 耗材1=黑（A 面线稿），耗材2=白（背景）。沿用 lineColor/baseColor，导出时槽位互换。
   lineColor: '#111111',
   baseColor: '#f3f6fb',
@@ -127,6 +140,7 @@ export const defaultLightReliefSettings: LightReliefSettings = {
   bFaceMode: 'auto',
   bFaceExposure: 100,
   bFaceInvert: false,
+  bFaceReverseStack: false,
 }
 
 interface FiligreeModeSettings {
@@ -388,6 +402,56 @@ function saveSharedSettings(settings: SharedSettings) {
   saveJson(SHARED_STORAGE_KEY, settings)
 }
 
+/**
+ * 迁移历史快照：
+ * - schema v2 → v3：移除自动调参功能。老用户带 autoOptimize=true 的快照强制改为 false，
+ *   这样即使旧 UI 显示"自动识别优化"开着，新 UI 也不会触发（开关已隐藏）。
+ * - schema v1 → v2：线条平滑曾默认 36，现改为 10。
+ *   若某模式快照的 smoothing 仍为旧默认 36，视作"用户未修改过"，移除该字段
+ *   使其回落到新默认值 10；若 smoothing 为其他值，视作"用户已显式修改"，保留不动。
+ */
+function migrateStoredSettings() {
+  if (typeof window === 'undefined') return
+  let version = 0
+  try {
+    version = Number(window.localStorage.getItem(SCHEMA_VERSION_KEY)) || 0
+  } catch {
+    version = 0
+  }
+  if (version >= SETTINGS_SCHEMA_VERSION) return
+
+  for (const key of MODE_STORAGE_KEYS) {
+    try {
+      const raw = window.localStorage.getItem(key)
+      if (!raw) continue
+      const parsed = JSON.parse(raw) as {
+        lineartSettings?: { smoothing?: number; autoOptimize?: boolean }
+      }
+      const ls = parsed?.lineartSettings
+      let mutated = false
+      if (version < 2 && ls && ls.smoothing === LEGACY_SMOOTHING_DEFAULT) {
+        delete ls.smoothing
+        mutated = true
+      }
+      if (version < 3 && ls && ls.autoOptimize === true) {
+        ls.autoOptimize = false
+        mutated = true
+      }
+      if (mutated) {
+        window.localStorage.setItem(key, JSON.stringify(parsed))
+      }
+    } catch {
+      // 损坏的存储条目交给后续 normalize 兜底，跳过迁移
+    }
+  }
+
+  try {
+    window.localStorage.setItem(SCHEMA_VERSION_KEY, String(SETTINGS_SCHEMA_VERSION))
+  } catch {
+    // 忽略写入失败
+  }
+}
+
 function saveCurrentModeSettings(state: GeneratorState) {
   if (state.workMode === 'filigree') {
     saveFiligreeSettings({
@@ -414,6 +478,8 @@ function saveCurrentModeSettings(state: GeneratorState) {
     customThreeMfProfile: state.customThreeMfProfile,
   })
 }
+
+migrateStoredSettings()
 
 const storedFiligree = loadFiligreeSettings()
 const storedSeal = loadSealSettings()

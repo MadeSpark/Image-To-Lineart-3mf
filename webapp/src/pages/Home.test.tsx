@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import Home from '@/pages/Home'
 import { useGeneratorStore } from '@/stores/generatorStore'
@@ -17,7 +17,7 @@ describe('Home', () => {
         despeckle: 24,
         expandStrokeMm: 0,
         shrinkStrokeMm: 0,
-        smoothing: 36,
+        smoothing: 10,
         invert: false,
         mirror: false,
         autoOptimize: true,
@@ -35,6 +35,7 @@ describe('Home', () => {
         rectangleScalePercent: 100,
         diameterMm: 50,
         marginMm: 4,
+        imagePlacement: 'fit',
         lineColor: '#111111',
         baseColor: '#f3f6fb',
       },
@@ -74,8 +75,10 @@ describe('Home', () => {
     expect(screen.getByText('底板模板与颜色')).toBeTruthy()
     expect(screen.getByText('打印盘与单 3MF 摆盘')).toBeTruthy()
     expect(screen.getByText('3D预览')).toBeTruthy()
+    // 「恢复默认配置」在设置下拉菜单中，先展开再断言
+    fireEvent.click(screen.getByText('设置'))
     expect(screen.getByText('恢复默认配置')).toBeTruthy()
     expect(screen.getByText('上传 3MF 打印参数')).toBeTruthy()
-    expect(screen.getByText(/当前版本 v/)).toBeTruthy()
+    expect(screen.getByText(/^v\d/)).toBeTruthy()
   })
 })

@@ -30,7 +30,6 @@ import {
   buildSeal3mfPackage,
   rebuildArtworkWithLineLoops,
   buildLoopDxf,
-  calculateAutoLineartParams,
   decodeGifFrames,
   fileToImportedLineart,
   fileToSourceImage,
@@ -38,6 +37,7 @@ import {
   processArtwork,
   processLightReliefArtwork,
 } from '@/utils/generator'
+import type { LineartStrokeMaskOptions } from '@/utils/generator'
 import {
   createFallbackThreeMfTemplateProfile,
   loadDefaultThreeMfTemplateProfile,
@@ -279,11 +279,18 @@ export default function Home() {
   }, [effectiveBFaceMode, lightReliefSettings.faceBHeightMm, lightReliefSettings.faceBZMm, lightReliefSettings.totalHeightMm, updateLightReliefSettings])
 
   const activeLineartOverride = activeEntryId ? lineartOverrides[activeEntryId] : undefined
+  // 2026-08-28：预览位图与 3MF 导出必须共用同一条掩码管线（含加粗/缩小描边、最小线宽），
+  // 否则设置了缩小描边时预览仍显示未腐蚀的细节，而 3MF 里的眼睛等小细节已被腐蚀掉。
+  const lineartStrokeOptions: LineartStrokeMaskOptions = useMemo(() => ({
+    minLineWidthMm: extrudeSettings.minLineWidthMm,
+    expandStrokeMm: lineartSettings.expandStrokeMm,
+    shrinkStrokeMm: lineartSettings.shrinkStrokeMm,
+  }), [extrudeSettings.minLineWidthMm, lineartSettings.expandStrokeMm, lineartSettings.shrinkStrokeMm])
   const baseArtwork = useMemo(
     () => (artwork && activeLineartOverride
-      ? rebuildArtworkWithLineLoops(artwork, activeLineartOverride, baseplateSettings)
+      ? rebuildArtworkWithLineLoops(artwork, activeLineartOverride, baseplateSettings, lineartStrokeOptions)
       : artwork),
-    [activeLineartOverride, artwork, baseplateSettings],
+    [activeLineartOverride, artwork, baseplateSettings, lineartStrokeOptions],
   )
   const effectiveArtwork = useMemo(() => {
     if (!baseArtwork || !numberingSettings.enabled || workMode === 'seal') return baseArtwork
@@ -294,37 +301,15 @@ export default function Home() {
       baseplateSettings,
       numberingSettings,
       numberingSettings.startNumber + activeIndex,
+      lineartStrokeOptions,
     )
-  }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings, workMode])
+  }, [baseArtwork, numberingSettings, entries, activeEntryId, baseplateSettings, workMode, lineartStrokeOptions])
 
-  // 当开启自动优化、或用户切换到另一张图片时，若图片尺寸与当前
-  // 参数差距明显，就自动重新计算。避免用户手动调过的参数被反复覆盖：
-  // 只有当图片实际分辨率与当前参数明显不匹配时才自动刷新（>15% 差异）。
-  useEffect(() => {
-    if (!lineartSettings.autoOptimize || !sourceImage) return
+// 2026-08-27：用户反馈"上传非预设分辨率图片时被自动覆盖 smoothing 不可接受"。
+// 删除整个自动调参 useEffect——所有 lineart 参数严格使用用户在 UI 上设置的值。
 
-    const maxDim = Math.max(sourceImage.width, sourceImage.height)
-    const expectedDetail = Math.round(Math.max(0, Math.min(200, (Math.min(maxDim, 5000) - 480) / 12)))
-    const detailMismatch = Math.abs(expectedDetail - lineartSettings.detail) > 15
-    if (!detailMismatch) return
-
-    const autoParams = calculateAutoLineartParams(sourceImage)
-    if (lineartSettings.thresholdAuto) {
-      updateLineartSettings({ ...autoParams })
-    } else {
-      const { threshold, ...rest } = autoParams
-      updateLineartSettings({ ...rest })
-    }
-  }, [
-    lineartSettings.autoOptimize,
-    lineartSettings.thresholdAuto,
-    lineartSettings.detail,
-    sourceImage,
-    updateLineartSettings,
-  ])
-
-  useEffect(() => {
-    setLineartOverrides((current) => {
+useEffect(() => {
+  setLineartOverrides((current) => {
       const activeIds = new Set(entries.map((entry) => entry.id))
       const nextEntries = Object.entries(current).filter(([entryId]) => activeIds.has(entryId))
       if (nextEntries.length === Object.keys(current).length) {
@@ -469,19 +454,8 @@ export default function Home() {
         nextEntries.push(createImageEntry(source))
       }
 
-      if (nextEntries.length && lineartSettings.autoOptimize) {
-        const firstImage = nextEntries[0].sourceImage
-        if (firstImage) {
-          const autoParams = calculateAutoLineartParams(firstImage)
-          if (lineartSettings.thresholdAuto) {
-            updateLineartSettings({ ...autoParams })
-          } else {
-            // 手动锁定 threshold 时，不覆盖用户的 threshold 设置
-            const { threshold, ...rest } = autoParams
-            updateLineartSettings({ ...rest })
-          }
-        }
-      }
+      // 2026-08-27：用户反馈"上传非预设分辨率图片时被自动覆盖 smoothing 不可接受"。
+      // 已删除对 lineartSettings 的自动覆盖逻辑——严格使用用户在 UI 上设置的值。
 
       addEntries(nextEntries)
       if (pendingGifs.length) {
@@ -561,7 +535,7 @@ export default function Home() {
 
       const lineartOverride = lineartOverrides[entry.id]
       let finalArtwork = lineartOverride
-        ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings)
+        ? rebuildArtworkWithLineLoops(processedArtwork, lineartOverride, baseplateSettings, lineartStrokeOptions)
         : processedArtwork
 
       if (numberingSettings.enabled && workMode === 'filigree') {
@@ -570,6 +544,7 @@ export default function Home() {
           baseplateSettings,
           numberingSettings,
           numberingSettings.startNumber + index,
+          lineartStrokeOptions,
         )
       }
 
@@ -889,6 +864,7 @@ export default function Home() {
       points,
       radiusMm,
       mode,
+      lineartStrokeOptions,
     )
     setLineartOverrides((current) => ({
       ...current,

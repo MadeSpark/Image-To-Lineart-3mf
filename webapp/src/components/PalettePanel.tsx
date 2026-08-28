@@ -1,6 +1,6 @@
-import { Circle, RectangleHorizontal, ScanSearch, SwatchBook } from 'lucide-react'
+import { Circle, Frame, RectangleHorizontal, ScanSearch, Scaling, Scissors, SwatchBook } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { BaseplateSettings, BaseTemplate, PrintBedSettings, RectangleSizeMode } from '@/types/generator'
+import type { BaseplateSettings, BaseTemplate, ImagePlacement, PrintBedSettings, RectangleSizeMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 import { calculateRectangleRatioLayout } from '@/utils/baseplate'
 
@@ -40,6 +40,38 @@ interface PalettePanelProps {
 const rectangleSizeModes: Array<{ value: RectangleSizeMode; label: string }> = [
   { value: 'ratio', label: '比例模式' },
   { value: 'manual', label: '长宽模式' },
+]
+
+const imagePlacements: Array<{
+  value: ImagePlacement
+  label: string
+  desc: string
+  icon: typeof Frame
+}> = [
+  {
+    value: 'fit',
+    label: '等比适应',
+    desc: '等比缩放完整显示在安全边距内',
+    icon: Frame,
+  },
+  {
+    value: 'center',
+    label: '图片居中',
+    desc: '保持原比例，在画布内最大化居中，不裁剪',
+    icon: ScanSearch,
+  },
+  {
+    value: 'stretch',
+    label: '图片缩放',
+    desc: '拉伸铺满安全边距内区域，比例可能变形',
+    icon: Scaling,
+  },
+  {
+    value: 'crop',
+    label: '图片裁剪',
+    desc: '从图片中间裁剪铺满安全边距内区域，保持比例',
+    icon: Scissors,
+  },
 ]
 
 export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, onUpdateSettings }: PalettePanelProps) {
@@ -98,6 +130,36 @@ export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, on
       </div>
 
       <div className="grid gap-3 rounded-[20px] bg-slate-50 p-4">
+        {settings.template !== 'outline' && (
+          <div className="space-y-2 text-[11px] text-slate-500">
+            <div>底板规则</div>
+            <div className="grid grid-cols-2 gap-2">
+              {imagePlacements.map((placement) => {
+                const Icon = placement.icon
+                const selected = settings.imagePlacement === placement.value
+                return (
+                  <button
+                    key={placement.value}
+                    type="button"
+                    onClick={() => onUpdateSettings({ imagePlacement: placement.value })}
+                    className={cn(
+                      'rounded-xl border px-3 py-2 text-left transition',
+                      selected
+                        ? 'border-sky-300 bg-sky-50 text-sky-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
+                    )}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-medium">
+                      <Icon className="h-3.5 w-3.5" />
+                      {placement.label}
+                    </div>
+                    <div className="mt-1 text-[10px] leading-4 text-slate-400">{placement.desc}</div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
         <NumberField
           label="轮廓外扩"
           suffix="mm"
@@ -111,22 +173,22 @@ export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, on
         <NumberField
           label="矩形长度"
           suffix="mm"
-          value={settings.heightMm}
-          min={20}
-          max={500}
-          step={1}
-          disabled={settings.template !== 'rectangle' || settings.rectangleSizeMode === 'ratio'}
-          onChange={(value) => onUpdateSettings({ heightMm: value })}
-        />
-        <NumberField
-          label="矩形宽度"
-          suffix="mm"
           value={settings.widthMm}
           min={20}
           max={500}
           step={1}
           disabled={settings.template !== 'rectangle' || settings.rectangleSizeMode === 'ratio'}
           onChange={(value) => onUpdateSettings({ widthMm: value })}
+        />
+        <NumberField
+          label="矩形宽度"
+          suffix="mm"
+          value={settings.heightMm}
+          min={20}
+          max={500}
+          step={1}
+          disabled={settings.template !== 'rectangle' || settings.rectangleSizeMode === 'ratio'}
+          onChange={(value) => onUpdateSettings({ heightMm: value })}
         />
         <NumberField
           label="圆形直径"

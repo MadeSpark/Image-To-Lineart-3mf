@@ -423,12 +423,6 @@ export function UploadPanel({
 
           {/* 开关行 */}
           <SettingSwitch
-            label="自动识别优化"
-            description="导入图片时根据分辨率自动调参"
-            checked={settings.autoOptimize}
-            onChange={(value) => onUpdateSettings({ autoOptimize: value })}
-          />
-          <SettingSwitch
             label="微细节保护"
             description="保留 1-2px 细线，避免腐蚀消除"
             checked={settings.protectFineDetail}

@@ -573,14 +573,25 @@ export function PreviewCanvas({
                       fill={layer.fill}
                       opacity={layer.opacity}
                     >
-                      <path
-                        d={layer.path}
-                        fillRule="evenodd"
-                        stroke={layer.stroke}
-                        strokeWidth={layer.strokeWidth}
-                        strokeLinecap={layer.strokeLinecap}
-                        strokeLinejoin={layer.strokeLinejoin}
-                      />
+                      {layer.image ? (
+                        <image
+                          href={layer.image.href}
+                          x={formatVectorNumber(layer.image.x)}
+                          y={formatVectorNumber(layer.image.y)}
+                          width={formatVectorNumber(layer.image.width)}
+                          height={formatVectorNumber(layer.image.height)}
+                          preserveAspectRatio="none"
+                        />
+                      ) : (
+                        <path
+                          d={layer.path}
+                          fillRule="evenodd"
+                          stroke={layer.stroke}
+                          strokeWidth={layer.strokeWidth}
+                          strokeLinecap={layer.strokeLinecap}
+                          strokeLinejoin={layer.strokeLinejoin}
+                        />
+                      )}
                     </g>
                   ))}
                   {canEditLineart && liveStrokePoints.length > 1 && lineartTool !== 'pan' && (
@@ -752,6 +763,14 @@ function buildVectorPreviewScene(
     strokeLinecap?: 'butt' | 'round' | 'square'
     strokeLinejoin?: 'miter' | 'round' | 'bevel'
     path: string
+    /** 图像层（如光映浮雕 B 面 halftone 灰度图），覆盖整个画板 */
+    image?: {
+      href: string
+      x: number
+      y: number
+      width: number
+      height: number
+    }
   }> = []
 
   const viewWidth = artwork?.boardWidthMm ?? sourceImage?.width ?? 1
@@ -875,6 +894,7 @@ function buildVectorPreviewScene(
       })
     }
   } else if (artwork) {
+    // 分层预览：底板 + A 面线稿 + B 面（灰色调）
     layers.push({
       id: 'baseplate',
       fill: baseplateSettings.baseColor,
@@ -892,13 +912,34 @@ function buildVectorPreviewScene(
         path: loopsToSvgPath(artwork.strokeLoops),
       })
     }
-    if (workMode === 'light-relief' && artwork.lineLoopsB?.length) {
-      layers.push({
-        id: 'lineart-b',
-        fill: '#ef4444',
-        opacity: 0.55,
-        path: loopsToSvgPath(artwork.lineLoopsB),
-      })
+    if (workMode === 'light-relief') {
+      if (artwork.lineLoopsB?.length) {
+        // lineart 模式：B 面线稿以灰色显示
+        layers.push({
+          id: 'lineart-b',
+          fill: '#6b7280',
+          opacity: 0.7,
+          path: loopsToSvgPath(artwork.lineLoopsB),
+        })
+      } else if (artwork.bFaceHeightMap) {
+        // halftone 模式：B 面灰度高度图以灰色调图像层叠加
+        const bFaceGrayUrl = buildBFaceGrayOverlayDataUrl(artwork.bFaceHeightMap)
+        if (bFaceGrayUrl) {
+          layers.push({
+            id: 'bface-halftone',
+            fill: 'none',
+            opacity: 0.85,
+            path: '',
+            image: {
+              href: bFaceGrayUrl,
+              x: 0,
+              y: 0,
+              width: viewWidth,
+              height: viewHeight,
+            },
+          })
+        }
+      }
     }
   }
 
@@ -906,7 +947,37 @@ function buildVectorPreviewScene(
     viewWidth,
     viewHeight,
     imageLayer,
-    layers: layers.filter((layer) => layer.path),
+    layers: layers.filter((layer) => layer.path || layer.image),
+  }
+}
+
+/**
+ * 将光映浮雕 B 面 halftone 高度图渲染为灰色调 PNG data URL。
+ * - 高度 1（最深/最厚）→ 深灰（约 rgb(90,90,90)），0（最浅/最薄）→ 近白（约 rgb(235,235,235)）
+ * - 高度图像素空间与画板一一对应（y=0 为画面顶部），直接整幅铺在画板上
+ */
+function buildBFaceGrayOverlayDataUrl(heightMap: { width: number; height: number; data: Float32Array }): string | null {
+  const { width, height, data } = heightMap
+  if (width <= 0 || height <= 0 || data.length < width * height) return null
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const imageData = ctx.createImageData(width, height)
+    for (let i = 0; i < width * height; i += 1) {
+      const t = Math.max(0, Math.min(1, data[i]))
+      const v = Math.round(235 - t * (235 - 90))
+      imageData.data[i * 4] = v
+      imageData.data[i * 4 + 1] = v
+      imageData.data[i * 4 + 2] = v
+      imageData.data[i * 4 + 3] = 255
+    }
+    ctx.putImageData(imageData, 0, 0)
+    return canvas.toDataURL('image/png')
+  } catch {
+    return null
   }
 }
 

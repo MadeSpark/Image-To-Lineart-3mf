@@ -12,6 +12,7 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().lineartSettings.detail).toBe(100)
     expect(useGeneratorStore.getState().lineartSettings.threshold).toBe(160)
     expect(useGeneratorStore.getState().lineartSettings.expandStrokeMm).toBe(0)
+    expect(useGeneratorStore.getState().lineartSettings.smoothing).toBe(10)
     expect(useGeneratorStore.getState().baseplateSettings.rectangleSizeMode).toBe('ratio')
     expect(useGeneratorStore.getState().baseplateSettings.rectangleScalePercent).toBe(100)
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
@@ -28,7 +29,7 @@ describe('useGeneratorStore persistence', () => {
       expandStrokeMm: 1.2,
     })
 
-    const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings') ?? '{}')
+    const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-filigree') ?? '{}')
 
     expect(saved.lineartSettings.detail).toBe(88)
     expect(saved.lineartSettings.threshold).toBe(120)
@@ -36,7 +37,7 @@ describe('useGeneratorStore persistence', () => {
   })
 
   it('loads saved settings on a fresh store import', async () => {
-    localStorage.setItem('lineart-baseplate-generator-settings', JSON.stringify({
+    localStorage.setItem('lineart-baseplate-generator-settings-filigree', JSON.stringify({
       lineartSettings: {
         detail: 72,
         threshold: 90,
@@ -50,6 +51,8 @@ describe('useGeneratorStore persistence', () => {
       extrudeSettings: {
         baseThicknessMm: 0.3,
       },
+    }))
+    localStorage.setItem('lineart-baseplate-generator-settings-shared', JSON.stringify({
       printBedSettings: {
         widthMm: 300,
         spacingMm: 12,
@@ -168,9 +171,30 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(180)
     expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(180)
 
-    const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings') ?? '{}')
+    const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-filigree') ?? '{}')
     expect(saved.lineartSettings.detail).toBe(64)
     expect(saved.baseplateSettings.widthMm).toBe(250)
-    expect(saved.printBedSettings.depthMm).toBe(180)
+    const savedShared = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-shared') ?? '{}')
+    expect(savedShared.printBedSettings.depthMm).toBe(180)
+  })
+
+  it('migrates legacy smoothing default (36) to the new default on load', async () => {
+    localStorage.setItem('lineart-baseplate-generator-settings-filigree', JSON.stringify({
+      lineartSettings: { smoothing: 36 },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    expect(useGeneratorStore.getState().lineartSettings.smoothing).toBe(10)
+  })
+
+  it('preserves an explicitly modified smoothing value through migration', async () => {
+    localStorage.setItem('lineart-baseplate-generator-settings-filigree', JSON.stringify({
+      lineartSettings: { smoothing: 20 },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    expect(useGeneratorStore.getState().lineartSettings.smoothing).toBe(20)
   })
 })

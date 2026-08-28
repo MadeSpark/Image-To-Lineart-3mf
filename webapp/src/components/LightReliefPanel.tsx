@@ -163,6 +163,22 @@ export function LightReliefPanel({
             />
           </label>
 
+          {/* 浮雕暴露开关 */}
+          <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+            <span>B 面浮雕暴露（省略顶盖）</span>
+            <input
+              type="checkbox"
+              checked={settings.bFaceReverseStack}
+              onChange={(event) => onUpdateSettings({ bFaceReverseStack: event.target.checked })}
+              className="h-4 w-4 accent-[#0088ff]"
+            />
+          </label>
+          {settings.bFaceReverseStack && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
+              已开启浮雕暴露：原 B 面顶盖层（背景顶层）不再打印，浮雕 bumpy 顶面直接暴露在模型最顶部，透光率更佳。底座（背景下层）保留为贴热床实心基座。模型总高度可能减少。
+            </div>
+          )}
+
           {/* B 面高度过低提示 */}
           {settings.faceBHeightMm < 1 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">

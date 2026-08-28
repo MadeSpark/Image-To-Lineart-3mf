@@ -55,6 +55,7 @@ describe('threeMfProfile utilities', () => {
       rectangleScalePercent: 100,
       diameterMm: 50,
       marginMm: 4,
+      imagePlacement: 'fit',
       lineColor: '#111111',
       baseColor: '#f3f6fb',
     }, {
