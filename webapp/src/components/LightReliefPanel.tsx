@@ -163,24 +163,10 @@ export function LightReliefPanel({
             />
           </label>
 
-          {/* 反向堆叠开关 */}
-          <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
-            <span>反向堆叠（浮雕翻转 + 省略顶盖）</span>
-            <input
-              type="checkbox"
-              checked={settings.bFaceReverseStack}
-              onChange={(event) => onUpdateSettings({ bFaceReverseStack: event.target.checked })}
-              className="h-4 w-4 accent-[#0088ff]"
-            />
-          </label>
-          {settings.bFaceReverseStack && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
-              已开启反向堆叠：浮雕层序颠倒——原本贴着背景下层的平面底翻到顶部，
-              承载图像细节的起伏面（线条细的那一面）转为贴近背景下层，透光效果更佳；
-              背景顶层不再打印，避免与翻转后的满铺平面顶叠成厚重挡光层。
-              注意：起伏面的谷底与背景下层之间会留空隙（悬空），需自行加支撑或调小 B 面高度。
-            </div>
-          )}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-500">
+            透光浮雕柱体坐在底板上，底面齐平贴死、顶面随灰度起伏，凹凸面裸露朝上：
+            0% 悬垂、免支撑，且浮雕与底板之间无空气间隙、成像更锐。
+          </div>
 
           {/* B 面高度过低提示 */}
           {settings.faceBHeightMm < 1 && (

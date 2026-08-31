@@ -23,7 +23,7 @@ const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板�
 
 // 设置快照 schema 版本：用于一次性迁移历史 localStorage 快照。
 const SCHEMA_VERSION_KEY = 'lineart-baseplate-generator-settings-schema-version'
-const SETTINGS_SCHEMA_VERSION = 3
+const SETTINGS_SCHEMA_VERSION = 4
 // 旧版线条平滑默认值。迁移时若快照仍为此值，视作"用户未修改过"，回落到新默认值。
 const LEGACY_SMOOTHING_DEFAULT = 36
 const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY] as const
@@ -140,7 +140,6 @@ export const defaultLightReliefSettings: LightReliefSettings = {
   bFaceMode: 'auto',
   bFaceExposure: 100,
   bFaceInvert: false,
-  bFaceReverseStack: false,
 }
 
 interface FiligreeModeSettings {
@@ -404,6 +403,8 @@ function saveSharedSettings(settings: SharedSettings) {
 
 /**
  * 迁移历史快照：
+ * - schema v3 → v4：移除 B 面「反向堆叠」开关。老快照里残留的 lightReliefSettings.bFaceReverseStack
+ *   一律删除（该形态已被证明不可打印并移除，留着只是死键，且会污染导出时的字段合并）。
  * - schema v2 → v3：移除自动调参功能。老用户带 autoOptimize=true 的快照强制改为 false，
  *   这样即使旧 UI 显示"自动识别优化"开着，新 UI 也不会触发（开关已隐藏）。
  * - schema v1 → v2：线条平滑曾默认 36，现改为 10。
@@ -426,6 +427,7 @@ function migrateStoredSettings() {
       if (!raw) continue
       const parsed = JSON.parse(raw) as {
         lineartSettings?: { smoothing?: number; autoOptimize?: boolean }
+        lightReliefSettings?: { bFaceReverseStack?: boolean }
       }
       const ls = parsed?.lineartSettings
       let mutated = false
@@ -435,6 +437,11 @@ function migrateStoredSettings() {
       }
       if (version < 3 && ls && ls.autoOptimize === true) {
         ls.autoOptimize = false
+        mutated = true
+      }
+      if (version < 4 && parsed.lightReliefSettings
+        && 'bFaceReverseStack' in parsed.lightReliefSettings) {
+        delete parsed.lightReliefSettings.bFaceReverseStack
         mutated = true
       }
       if (mutated) {

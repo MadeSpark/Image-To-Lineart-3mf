@@ -136,12 +136,14 @@ export type LightReliefBFaceMode = 'auto' | 'lineart' | 'halftone'
  * - bFaceMode: B 面处理模式（默认 'auto'）
  * - bFaceExposure: halftone 模式下的曝光值（0~200，100 为原始亮度），用于调整图片过暗时的厚度分布
  * - bFaceInvert: halftone 模式下是否反转灰度（深色变浅、浅色变深）
- * - bFaceReverseStack: halftone 模式下 B 面浮雕「反向堆叠」——把浮雕在自己的 Z 区间内层序
- *   颠倒（原本 1→3 层打印 a,b,c，开启后变成 c,b,a）。正向是底面固定、顶面随灰度起伏；
- *   反向则底面随灰度起伏（承载图像细节的那一面贴近背景下层，透光效果更佳）、顶面固定为
- *   满铺平面（即翻转前的浮雕平面底）。同时省略背景顶盖层，避免与翻转后的满铺平面顶
- *   叠成厚重挡光层。
- *   注意：反向后起伏面的谷底与背景下层之间会留空隙（悬空），打印需加支撑或调小 B 面高度。
+ *
+ * 【B 面透光浮雕几何唯一解（2026-08-30 第 12 轮定案，勿再改回去）】
+ * 浮雕柱体**坐在背景下层上**：底面齐平贴死 faceBZMm（与底座全接触、零空腔），
+ * 顶面随灰度起伏，凹凸面裸露朝上 → 横截面随 Z 单调收缩（SHRINKING）→ 0% 悬垂、免支撑。
+ * 曾存在的「bFaceReverseStack 反向堆叠」（柱体吊挂、尖端朝 A 面 + 倒扣打印）已被证明不可打印并移除：
+ *   正打 → 柱底悬空 GROWING；倒扣 180° → 背景下层变悬顶（实测第一层 87.5% 悬空）。
+ * 同理，背景顶层（顶盖）已永久删除：它盖在凹凸面上方，谷底上方全是空腔 → 悬顶 + 挡光。
+ *
  * 其余区域一律用耗材2（白）填充。
  */
 export interface LightReliefSettings {
@@ -153,7 +155,6 @@ export interface LightReliefSettings {
   bFaceMode: LightReliefBFaceMode
   bFaceExposure: number
   bFaceInvert: boolean
-  bFaceReverseStack: boolean
 }
 
 export interface ThreeMfTemplateProfile {

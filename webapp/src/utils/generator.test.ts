@@ -188,8 +188,12 @@ describe('generator exports', () => {
     }
   })
 
-  it('exposes the B-face relief surface by skipping the top cover when reverse stack is enabled', async () => {
-    const baseReliefSettings: LightReliefSettings = {
+  it('sits the B-face relief flush on the base plate and never prints a top cover', async () => {
+    // 【几何唯一解（2026-08-30 第 12 轮定案）】
+    // 浮雕柱体坐在 A 面底板上：底面齐平贴死 faceBZMm，顶面随灰度起伏，凹凸面裸露朝上
+    //   → SHRINKING、0% 悬垂、免支撑。
+    // 背景顶层（顶盖）永久删除：它是盖在凹凸面上的实心板，谷底上方全是空腔 → 悬顶 + 挡光。
+    const reliefSettings: LightReliefSettings = {
       totalHeightMm: 1,
       faceAZMm: 0,
       faceAHeightMm: 0.4,
@@ -198,7 +202,6 @@ describe('generator exports', () => {
       bFaceMode: 'auto',
       bFaceExposure: 100,
       bFaceInvert: false,
-      bFaceReverseStack: false,
     }
     const artwork = {
       baseLoops: sourceLoops,
@@ -209,41 +212,22 @@ describe('generator exports', () => {
       pixelsPerMm: 10,
     }
 
-    const parseZRanges = async (reverseStack: boolean) => {
-      const blob = buildLightReliefPreviewModelGltfBlob(
-        artwork,
-        rectangleSettings,
-        { ...baseReliefSettings, bFaceReverseStack: reverseStack },
-      )
-      const gltf = JSON.parse(await readBlobText(blob as Blob))
-      const ranges: Record<string, { minZ: number; maxZ: number }> = {}
-      gltf.meshes.forEach((mesh: { name: string; primitives: Array<{ attributes: { POSITION: number } }> }, index: number) => {
-        const accessor = gltf.accessors[mesh.primitives[0].attributes.POSITION]
-        ranges[mesh.name] = { minZ: accessor.min[1], maxZ: accessor.max[1] }
-      })
-      return ranges
-    }
+    const blob = buildLightReliefPreviewModelGltfBlob(artwork, rectangleSettings, reliefSettings)
+    const gltf = JSON.parse(await readBlobText(blob as Blob))
+    const ranges: Record<string, { minZ: number; maxZ: number }> = {}
+    gltf.meshes.forEach((mesh: { name: string; primitives: Array<{ attributes: { POSITION: number } }> }) => {
+      const accessor = gltf.accessors[mesh.primitives[0].attributes.POSITION]
+      ranges[mesh.name] = { minZ: accessor.min[1], maxZ: accessor.max[1] }
+    })
 
-    const normal = await parseZRanges(false)
-    expect(normal['背景下层']).toEqual({ minZ: 0, maxZ: 0.6 })
-    // 正常模式：底面固定在 faceBZMm=0.6，顶面随灰度变化（avgH = 0.05 + 0.5×0.15 = 0.125）
-    expect(normal['B面透光浮雕'].minZ).toBeCloseTo(0.6, 5)
-    expect(normal['B面透光浮雕'].maxZ).toBeCloseTo(0.725, 5)
-    expect(normal['背景顶层']).toEqual({ minZ: 0.8, maxZ: 1 })
-
-    const reversed = await parseZRanges(true)
-    // 底座（背景下层）始终保留，为浮雕提供贴热床实心基座
-    expect(reversed['背景下层']).toEqual({ minZ: 0, maxZ: 0.6 })
-    // 反向堆叠：浮雕层序颠倒——原本的平面底（faceBZMm=0.6）翻到顶部 bFaceTopMm=0.8，
-    // 起伏面转而朝向背景下层。均匀灰度下 avgH=0.125，故区间为 [0.8-0.125, 0.8] = [0.675, 0.8]
-    expect(reversed['B面透光浮雕'].minZ).toBeCloseTo(0.675, 5)
-    expect(reversed['B面透光浮雕'].maxZ).toBeCloseTo(0.8, 5)
-    // 反向后浮雕顶面已占满 bFaceTopMm，背景顶层不再打印（避免叠成厚重挡光层）
-    expect(reversed['背景顶层']).toBeUndefined()
-    // 反向区间的厚度应与正向一致（只是位置挪到区间顶部），证明确实是"翻转"而非缩放
-    const normalThickness = normal['B面透光浮雕'].maxZ - normal['B面透光浮雕'].minZ
-    const reversedThickness = reversed['B面透光浮雕'].maxZ - reversed['B面透光浮雕'].minZ
-    expect(reversedThickness).toBeCloseTo(normalThickness, 5)
+    // 背景下层：实心底座，贴热床
+    expect(ranges['背景下层']).toEqual({ minZ: 0, maxZ: 0.6 })
+    // 浮雕底面齐平贴死底板顶面 faceBZMm=0.6（零空腔），顶面随灰度起伏
+    // 均匀灰度 0.5 下 avgH = minThick + 0.5×(0.2 − minThick) = 0.05 + 0.5×0.15 = 0.125
+    expect(ranges['B面透光浮雕'].minZ).toBeCloseTo(0.6, 5)
+    expect(ranges['B面透光浮雕'].maxZ).toBeCloseTo(0.725, 5)
+    // 顶盖永久不存在
+    expect(ranges['背景顶层']).toBeUndefined()
   })
 
   it('reduces wrinkle points more aggressively as smoothing increases', async () => {

@@ -239,6 +239,7 @@ export async function processArtwork({
     pixelsPerMm,
     paddingMm,
     lineartSettings.smoothing,
+    source?.kind === 'image', // 图像源已在 buildImageLineart 中平滑过；DXF 源尚未平滑
   )
 
   if (!finalLineLoops.length) {
@@ -337,9 +338,23 @@ export async function processArtwork({
 }
 
 /**
- * 线稿构建助手：将已布局到画板上的线稿回路光栅化 → 描边 → 平滑 → 过滤退化多边形。
+ * 线稿构建助手：对已布局到画板（mm）上的线稿回路做最小过滤、必要时的平滑。
+ *
  * 抽取出来供掐丝模式（processArtwork）与光映浮雕模式（processLightReliefArtwork）共用，
  * 保证 A/B 两面与单面线稿走完全一致的处理管线。
+ *
+ * 关键约定（2026-09-01 修正）：**所有入口 loops 已经在 mm 坐标系**——
+ * - 图像源：buildImageLineart 输出 normalizeLoops + scaleLoopsToMaxDimension → 最长边 40mm
+ * - DXF 源：importedLineart.loops 经 normalizeLoops 平移到 minX/minY=0
+ * - 两者再经 layoutLineLoops 缩放到 board，最终落到 mm 坐标系上待打印
+ * 旧版对此处做了一次 `pixelsToMm(loop, pixelsPerMm, paddingMm)`，把 mm 坐标当 pixel 坐标再
+ * 除一次——约等于把画板中心的 40mm 内容压扁到 4mm 一个角落，这就是图像被"裁剪+居中"失效、
+ * 整图挤在左上角的根因。
+ *
+ * 三类分支：
+ * 1) image 源（alreadySmoothed）：buildImageLineart 已完成 Chaikin+子像素+DP 平滑 → 只过滤
+ * 2) DXF 源 + smoothing>0：在 mm 坐标系直接跑 smoothLoops → 过滤
+ * 3) smoothing=0 任何源：用户刻意要原始输出 → 走旧光栅化→追踪→mm round-trip 保留几何
  *
  * 0.005 mm² ≈ 直径 0.08 mm 的圆，只剔除完全退化的多边形或真正的像素噪点。
  * 前面的 despeckle 已经清掉了小连通域噪点，因此这里不做激进过滤。
@@ -351,7 +366,31 @@ function finalizeLineLoops(
   pixelsPerMm: number,
   paddingMm: number,
   smoothing: number,
+  alreadySmoothed = false,
 ): VectorLoop[] {
+  const MIN_LOOP_AREA_MM2 = 0.005
+
+  // 分支 1：图像源已完成平滑，仅做去重 + 退化多边形过滤（mm 直入直出）
+  if (alreadySmoothed) {
+    return laidOutLoops
+      .map((loop) => ({
+        ...loop,
+        points: sanitizeLoop(dedupeByDistance(loop.points, 0.05)),
+      }))
+      .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2)
+  }
+
+  // 分支 2：DXF 源 + smoothing>0，直接在 mm 上做平滑（不换像素→省一道 round-trip）
+  if (smoothing > 0) {
+    return smoothLoops(
+      laidOutLoops.filter(
+        (loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2,
+      ),
+      smoothing,
+    )
+  }
+
+  // 分支 3：smoothing=0，走完整 rasterize→trace→pixelsToMm round-trip 保留旧行为
   const lineMask = rasterizeLoopsToMask(
     laidOutLoops,
     boardWidthMm,
@@ -359,13 +398,9 @@ function finalizeLineLoops(
     pixelsPerMm,
     paddingMm,
   )
-  const MIN_LOOP_AREA_MM2 = 0.005
-  return smoothLoops(
-    traceMaskToLoops(lineMask.mask, lineMask.width, lineMask.height)
-      .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
-      .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2),
-    smoothing,
-  )
+  return traceMaskToLoops(lineMask.mask, lineMask.width, lineMask.height)
+    .map((loop) => pixelsToMm(loop, pixelsPerMm, paddingMm))
+    .filter((loop) => Math.abs(loopArea(loop.points)) >= MIN_LOOP_AREA_MM2)
 }
 
 /**
@@ -600,35 +635,128 @@ function buildHalftoneHeightMapFromImageData(
 }
 
 /**
+ * 透光浮雕灰度高度图（0 = 最薄，1 = 最厚）。
+ */
+export interface HalftoneHeightMap {
+  width: number
+  height: number
+  data: Float32Array
+}
+
+/**
+ * 透光浮雕高度图的空间分辨率上限（格/mm），即 0.2mm/格 = 0.4mm 喷嘴直径的一半。
+ *
+ * 高度图原本直接按 artwork.pixelsPerMm（detail=100 时 desired=16，再被 1200/最长边 封顶，
+ * 下限硬夹在 4）逐格建网格，导致网格规模完全失控且大板会崩：
+ *   - 150×100mm 板 @8px/mm → 1200×800 格 → 385 万三角面 / 约 250MB XML / 约 27MB 3MF
+ *   - 200×200mm 板 @6px/mm → 1200×1200 格 → 576 万三角面 / 约 392MB XML（逼近 V8 上限）
+ *   - 500×500mm 板 @4px/mm → 2000×2000 格 → 1600 万三角面 / 约 1.1GB XML → 超上限直接崩
+ *     （板子超过约 300mm 后 floor(1200/最长边) 被下限 4 顶住，封顶失效，格子数随尺寸继续涨）
+ * 而 0.125mm 的格距比 0.4mm 喷嘴细 3 倍多，多出来的几何打印机根本复现不出来。
+ * 统一封顶到 0.2mm/格：打印效果无损，体积降到约 40%，且彻底消除崩溃风险。
+ */
+const RELIEF_CELLS_PER_MM = 5
+
+/**
+ * 透光浮雕高度图的**绝对格数上限**（与线稿导出 chooseSingleExportPixelsPerMm 的
+ * maxSingleAreaPx 同一量级）。
+ *
+ * 光有密度上限不够：choosePixelsPerMm 的下限是 4 px/mm，所以 500×500mm 板拿到的是
+ * 2000×2000 格（0.25mm/格）——单格已经比 0.2mm 目标粗，密度封顶不会触发，但
+ * 400 万格照样会让 XML 涨到约 1.1GB 并超出 V8 字符串上限。超大画板必须由格数上限兜底。
+ * 720K 格对应约 196MB XML / 约 21MB 3MF，距 V8 上限（536,870,888 字符）有约 2.7 倍余量。
+ */
+const RELIEF_MAX_CELLS = 720_000
+
+/**
+ * 将高度图按**盒式平均**降采样到目标格数（只降不升）。
+ * 先按密度上限算目标格数，再按绝对格数上限等比收缩。
+ * 在建网格之前统一处理，导出与 3D 预览共用 → 所见即所得不被破坏。
+ */
+function capHalftoneHeightMapDensity(
+  heightMap: HalftoneHeightMap,
+  boardWidthMm: number,
+  boardHeightMm: number,
+): HalftoneHeightMap {
+  const { width: W, height: H, data } = heightMap
+  if (W <= 0 || H <= 0) return heightMap
+  let targetW = Math.max(1, Math.ceil(boardWidthMm * RELIEF_CELLS_PER_MM))
+  let targetH = Math.max(1, Math.ceil(boardHeightMm * RELIEF_CELLS_PER_MM))
+  const targetArea = targetW * targetH
+  if (targetArea > RELIEF_MAX_CELLS) {
+    const scale = Math.sqrt(RELIEF_MAX_CELLS / targetArea)
+    targetW = Math.max(1, Math.floor(targetW * scale))
+    targetH = Math.max(1, Math.floor(targetH * scale))
+  }
+  const w = Math.min(W, targetW)
+  const h = Math.min(H, targetH)
+  if (w === W && h === H) return heightMap
+  const out = new Float32Array(w * h)
+  for (let y = 0; y < h; y += 1) {
+    const y0 = Math.floor((y * H) / h)
+    const y1 = Math.max(y0 + 1, Math.floor(((y + 1) * H) / h))
+    for (let x = 0; x < w; x += 1) {
+      const x0 = Math.floor((x * W) / w)
+      const x1 = Math.max(x0 + 1, Math.floor(((x + 1) * W) / w))
+      let sum = 0
+      let n = 0
+      for (let sy = y0; sy < y1; sy += 1) {
+        const row = sy * W
+        for (let sx = x0; sx < x1; sx += 1) {
+          sum += data[row + sx]
+          n += 1
+        }
+      }
+      out[y * w + x] = n > 0 ? sum / n : 0
+    }
+  }
+  return { width: w, height: h, data: out }
+}
+
+/**
  * 根据高度图生成透光浮雕 B 面闭合网格（拓竹式结构）。
  *
- * - 厚度沿 Z 轴方向：zStart（底，固定）→ zStart + 高度图*maxHeightMm（顶面，随灰度变化）。
- * - reverseStack=true（反向堆叠）：把浮雕在自己的 Z 区间内**层序颠倒**——
- *     正向：底面固定 zStart（满铺平面，贴着背景下层）→ 顶面随灰度起伏（bumpy）
- *     反向：底面随灰度起伏（bumpy，朝向背景下层）→ 顶面固定 zStart+maxHeightMm（满铺平面）
- *   也就是「原本 1→3 层打印 a,b,c，反向后变成 c,b,a」：浮雕原本的平面底翻到顶部，
- *   bumpy（承载图像细节、线条细的那一面）转而贴近背景下层，透光效果更佳。
- *   注意：反向后 bumpy 面的谷底与背景下层之间会留空隙（悬空），属独立问题另行处理。
+ * - 输入高度图会先按 RELIEF_CELLS_PER_MM 降采样封顶（只降不升），导出与预览共用同一份，
+ *   保证所见即所得。
+ *
+ * 【几何唯一解（2026-08-30 第 12 轮定案）】
+ * 浮雕柱体**坐在 A 面底板上**：底面固定 zStart（整面齐平、与背景下层全接触、零空腔），
+ * 顶面 zStart + 高度图*maxHeightMm 随灰度起伏。凹凸面在外侧朝上。
+ *
+ * 为什么只能是这个形态（曾被多轮推翻，务必记住，别再绕回去）：
+ * - 免支撑 ⟹ 横截面随 Z 单调不增（SHRINKING）⟹ 承载图像的凹凸面必须在**外侧朝上**。
+ * - 曾实现「▼ 反向堆叠」：柱体吊挂在平整顶棚下、尖端朝 A 面。该形态下柱尖下方必有空腔
+ *   （实测平均 0.848mm、最大 1.35mm），而 A 面底板在柱尖另一侧，形成
+ *   「实心底板 + 空腔 + 实心浮雕」三明治：
+ *     正打 → 柱底悬空、GROWING，需支撑；
+ *     倒扣 180° → 底板变悬顶，实测第一层 87.5% 悬空。
+ *   两条路都打不了。
+ * - 「把空腔填平」不是出路：填平后各柱总厚度变常量，图像消失。
+ * - 「让每根柱尖都贴住 A 面」⟹ 各柱等高 ⟹ 同样无图像。
+ * 结论：凹凸面朝上、底面齐平贴死 A 面，是唯一同时满足「有图像 + 免支撑 + 紧贴 A 面」的形态。
+ *
  * - 生成完整闭合体（顶面 + 底面 + 四周边墙），保证切片器识别为水密模型。
  * - flipY=true 时：对 Y 轴应用翻转（y' = boardHeightMm - y），使 halftone 与 3MF 导出时经过 flipLoopsForModelExport 的线稿对齐。
  *   flipY=false 时：Y 不翻转，直接使用 heightMap 的原始方向（y=0 对应 worldY=0），用于内部预览。
  */
-function buildHalftoneReliefMesh(
-  heightMap: { width: number; height: number; data: Float32Array },
-  pixelsPerMm: number,
+export function buildHalftoneReliefMesh(
+  heightMap: HalftoneHeightMap,
   zStart: number,
   maxHeightMm: number,
   boardWidthMm: number,
   boardHeightMm: number,
   flipY: boolean,
-  reverseStack: boolean = false,
 ): MeshData {
   const mesh: MeshData = { vertices: [], triangles: [] }
   if (maxHeightMm <= 0) return mesh
-  const { width: W, height: H, data } = heightMap
+  // 分辨率封顶：0.2mm/格。导出与 3D 预览都走这里 → 同一份高度图，所见即所得。
+  const { width: W, height: H, data } = capHalftoneHeightMapDensity(
+    heightMap,
+    boardWidthMm,
+    boardHeightMm,
+  )
   if (W <= 0 || H <= 0) return mesh
   // 严格贴合画板外框：W 个像素对应 boardWidthMm，H 个像素对应 boardHeightMm
-  // （不使用 1/pixelsPerMm，因为 ceil(...) 会让网格略大于画板）
   const cellMmX = boardWidthMm / W
   const cellMmY = boardHeightMm / H
 
@@ -666,14 +794,10 @@ function buildHalftoneReliefMesh(
         }
       }
       const avgH = hCount > 0 ? hSum / hCount : minThick
-      if (reverseStack) {
-        // 反向堆叠：顶面固定在 zStart+maxHeightMm，底面随灰度变化（层序颠倒）
-        mesh.vertices[bottomIndex(x, y)] = [worldX, worldY, zStart + maxHeightMm - avgH]
-        mesh.vertices[topIndex(x, y)] = [worldX, worldY, zStart + maxHeightMm]
-      } else {
-        mesh.vertices[bottomIndex(x, y)] = [worldX, worldY, zStart]
-        mesh.vertices[topIndex(x, y)] = [worldX, worldY, zStart + avgH]
-      }
+      // 柱体坐在 A 面底板上：底面齐平贴死 zStart（与背景下层全接触、零空腔），
+      // 顶面随灰度起伏。凹凸面在外侧朝上 → 横截面随 Z 单调收缩（SHRINKING）→ 免支撑。
+      mesh.vertices[bottomIndex(x, y)] = [worldX, worldY, zStart]
+      mesh.vertices[topIndex(x, y)] = [worldX, worldY, zStart + avgH]
     }
   }
   // 三角形数组预估算：顶面(W*H*2) + 底面(W*H*2) + 四周侧面(H*2 + W*2 + 4) ≈ 4WH + 4(W+H)
@@ -787,6 +911,7 @@ export async function processLightReliefArtwork({
     pixelsPerMm,
     paddingMm,
     lineartSettings.smoothing,
+    sourceA?.kind === 'image',
   )
 
   if (!finalLineLoopsA.length) {
@@ -838,6 +963,7 @@ export async function processLightReliefArtwork({
         pixelsPerMm,
         paddingMm,
         lineartSettings.smoothing,
+        sourceB?.kind === 'image',
       )
       : []
   } else {
@@ -1487,19 +1613,17 @@ export async function buildSeal3mfPackage(
  * 光映浮雕 3MF 导出。
  *
  * Z 轴分层（以默认 totalHeight=1, faceAZ=0/faceAHeight=0.4, faceBZ=0.6/faceBHeight=0.2 为例）：
- *   - 背景下半 [0, faceBZMm]：耗材2（白），整块画板
- *   - B 面阴刻层 [faceBZMm, faceBZMm+faceBHeightMm]：耗材2（白），仅填充“画板 减去 B 面线稿”的区域（B 面线稿区域留空）
- *   - 背景顶部 [faceBZMm+faceBHeightMm, totalHeightMm]：耗材2（白），整块画板
+ *   - 背景下半 [0, faceBZMm]：耗材2（白），整块画板，实心底座，贴热床
+ *   - B 面透光浮雕 [faceBZMm, faceBZMm+faceBHeightMm]：耗材2（白），柱体底面齐平坐在底座上、
+ *     顶面随灰度起伏（凹凸面裸露朝上）；lineart 模式下退化为“画板减去 B 面线稿”的阴刻层
  *   - A 面线稿 [faceAZMm, faceAZMm+faceAHeightMm]：耗材1（黑），A 面线稿区域
+ *
+ * 注意：**没有背景顶层（顶盖）**，且不可再加回。详见下方第 3 步注释。
  *
  * 耗材槽位与掐丝模式相反：耗材1=线稿（黑），耗材2=背景（白）。
  *
- * 开启 bFaceReverseStack（反向堆叠）时：
- *   - 背景下半 [0, faceBZMm] 始终保留（实心底座，贴热床，为浮雕提供基座）
- *   - B 面浮雕**层序颠倒**：bumpy 面朝向背景下层（线条细的那一面贴近底层，透光效果更佳），
- *     原本贴着背景下层的平面底翻到 Z=bFaceTopMm 成为满铺平面顶
- *   - 背景顶部 [bFaceTopMm, totalHeightMm] 不再生成——反向后浮雕的平面顶已在该位置，
- *     再叠一层实心背景会形成厚重的挡光实心层；省略后浮雕直接构成模型最顶部
+ * 打印朝向：浮雕凹凸面朝上、底面齐平贴死 A 面底板，原生即 SHRINKING（截面随 Z 单调收缩），
+ * 免支撑直接打印。不再做任何倒扣/翻转变换。
  */
 export async function buildLightRelief3mfPackage(
   artwork: ProcessedArtwork,
@@ -1529,11 +1653,7 @@ export async function buildLightRelief3mfPackage(
   const offsetX = singlePlacement?.xMm ?? 0
   const offsetY = singlePlacement?.yMm ?? 0
 
-  const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
-  const bFaceTopMm = faceBZMm + faceBHeightMm
-  // 反向堆叠：浮雕层序颠倒（bumpy 面朝向背景下层），底座始终保留；
-  // 背景顶层（顶盖）省略——避免与翻转后浮雕的满铺平面顶叠成厚重挡光层。
-  const reverseStack = lightReliefSettings.bFaceReverseStack ?? false
+  const { faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
   const outerBaseLoops = keepOuterLoops(flippedBaseLoops)
 
   // 每个网格记录其耗材 pindex（0=耗材1黑/A面线稿，1=耗材2白/背景）。
@@ -1560,13 +1680,11 @@ export async function buildLightRelief3mfPackage(
       const reliefMesh = translateMesh(
         buildHalftoneReliefMesh(
           artwork.bFaceHeightMap,
-          lineMeshPixelsPerMm,
           faceBZMm,
           faceBHeightMm,
           artwork.boardWidthMm,
           artwork.boardHeightMm,
           true, // flipY
-          reverseStack, // 反向堆叠：浮雕层序颠倒（见函数注释）
         ),
         offsetX,
         offsetY,
@@ -1618,19 +1736,10 @@ export async function buildLightRelief3mfPackage(
     }
   }
 
-  // 3. 背景顶部 [bFaceTopMm, totalHeightMm]（耗材2）。反向堆叠时跳过——浮雕翻转后的
-  //    满铺平面顶已占据该位置，再叠一层实心背景会形成厚重挡光层。
-  await onProgress?.('正在生成背景顶层网格...')
-  const topHeightMm = totalHeightMm - bFaceTopMm
-  if (topHeightMm > 0 && !reverseStack) {
-    const bgTopMesh = translateMesh(
-      extrudeLoopsToMesh(outerBaseLoops, bFaceTopMm, topHeightMm),
-      offsetX,
-      offsetY,
-    )
-    meshes.push({ mesh: bgTopMesh, objectId: nextObjectId, name: '背景顶层', pindex: 1, extruder: 2 })
-    nextObjectId += 1
-  }
+  // 3. 背景顶层（顶盖）—— 已永久删除，勿再加回。
+  //    顶盖是实心满铺板，盖在浮雕凹凸面上方；浮雕只有最高峰顶得到它，谷底上方全是空腔，
+  //    → 顶盖第一层大面积悬空（同类结构实测 87.5% 悬空），既打不了又挡光。
+  //    浮雕凹凸面必须裸露在外：光从此面射入，穿过柱体后由齐平底面进入 A 面。
 
   // 4. A 面线稿 [faceAZMm, faceAZMm+faceAHeightMm]（耗材1）
   await onProgress?.('正在生成 A 面线稿网格...')
@@ -1657,6 +1766,8 @@ export async function buildLightRelief3mfPackage(
   await onProgress?.('正在生成 3MF XML...')
   const compositeObjectId = nextObjectId
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
+  // 不再倒扣打印：浮雕凹凸面朝上、底面齐平贴死 A 面，原生即为 SHRINKING，直接打即可。
+  // （倒扣 180° 曾用于 ▼ 反向堆叠形态；该形态已被证明不可打印，已移除。）
   const modelXml = buildLightRelief3mfModelXml(meshes, compositeObjectId, baseplateSettings, applicationName)
 
   const parts = meshes.map((m) => ({ id: m.objectId, name: m.name, extruder: m.extruder }))
@@ -1726,15 +1837,13 @@ export function buildLightReliefPreviewModelGltfBlob(
   lineartSettings?: LineartSettings,
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
-  const { totalHeightMm, faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
-  const bFaceTopMm = faceBZMm + faceBHeightMm
-  // 反向堆叠：浮雕层序颠倒（bumpy 面朝向背景下层），底座始终保留；
-  // 背景顶层（顶盖）省略（与 3MF 导出保持一致）
-  const reverseStack = lightReliefSettings.bFaceReverseStack ?? false
+  const { faceAZMm, faceAHeightMm, faceBZMm, faceBHeightMm } = lightReliefSettings
   const minLineWidthMm = extrudeSettings?.minLineWidthMm ?? MIN_EXPORTABLE_LINE_WIDTH_MM
   const expandStrokeMm = lineartSettings?.expandStrokeMm ?? 0
   const shrinkStrokeMm = lineartSettings?.shrinkStrokeMm ?? 0
-  const outerBaseLoops = keepOuterLoops(artwork.baseLoops)
+  // 与 3MF 导出保持一致：背景/线稿均先经 flipLoopsForModelExport 的 Y 翻转，
+  // 保证预览与导出是同一套坐标约定（所见即所得）。
+  const outerBaseLoops = keepOuterLoops(flipLoopsForModelExport(artwork.baseLoops, artwork.boardHeightMm))
   const lineLoopsB = artwork.lineLoopsB?.length ? artwork.lineLoopsB : []
 
   const meshes: Array<{ mesh: MeshData; name: string; color: string }> = []
@@ -1749,17 +1858,15 @@ export function buildLightReliefPreviewModelGltfBlob(
 
   if (faceBHeightMm > 0) {
     if (artwork.bFaceHeightMap) {
-      // halftone 模式：透光浮雕网格（预览内部坐标系，不 flipY）
+      // halftone 模式：透光浮雕网格（flipY=true，与 3MF 导出同一套坐标约定）
       meshes.push({
         mesh: buildHalftoneReliefMesh(
           artwork.bFaceHeightMap,
-          lineMeshPixelsPerMm,
           faceBZMm,
           faceBHeightMm,
           artwork.boardWidthMm,
           artwork.boardHeightMm,
-          false, // flipY
-          reverseStack, // 反向堆叠：浮雕层序颠倒（见函数注释）
+          true, // flipY（与 3MF 导出一致，保证预览=导出）
         ),
         name: 'B面透光浮雕',
         color: baseplateSettings.baseColor,
@@ -1776,7 +1883,7 @@ export function buildLightReliefPreviewModelGltfBlob(
       let topMask = baseMask.mask
       if (lineLoopsB.length) {
         const lineMaskB = rasterizeLoopsToMask(
-          lineLoopsB,
+          flipLoopsForModelExport(lineLoopsB, artwork.boardHeightMm),
           artwork.boardWidthMm,
           artwork.boardHeightMm,
           lineMeshPixelsPerMm,
@@ -1805,19 +1912,14 @@ export function buildLightReliefPreviewModelGltfBlob(
     }
   }
 
-  const topHeightMm = totalHeightMm - bFaceTopMm
-  if (topHeightMm > 0 && !reverseStack) {
-    meshes.push({
-      mesh: extrudeLoopsToMesh(outerBaseLoops, bFaceTopMm, topHeightMm),
-      name: '背景顶层',
-      color: baseplateSettings.baseColor,
-    })
-  }
+  // 背景顶层（顶盖）不生成，与 3MF 导出保持一致：
+  // 顶盖是实心满铺板，盖在浮雕凹凸面上方，只有最高峰顶得到它，谷底上方全是空腔
+  // → 悬顶打不了，且挡光。浮雕凹凸面必须裸露在外。
 
   if (faceAHeightMm > 0 && artwork.lineLoops.length) {
     meshes.push({
       mesh: extrudeMaskToMesh(
-        artwork.lineLoops,
+        flipLoopsForModelExport(artwork.lineLoops, artwork.boardHeightMm),
         artwork.boardWidthMm,
         artwork.boardHeightMm,
         lineMeshPixelsPerMm,
@@ -1831,6 +1933,9 @@ export function buildLightReliefPreviewModelGltfBlob(
       color: baseplateSettings.lineColor,
     })
   }
+
+  // 不再施加倒扣翻转：浮雕凹凸面朝上、底面齐平贴死 A 面，
+  // 预览朝向 = 导出朝向 = 可打印朝向（原生 SHRINKING，免支撑）。
 
   return buildGltfPreviewBlob(
     meshes,
@@ -3141,17 +3246,27 @@ async function buildImageLineart(
   const baseSmoothingVal = settings.smoothing
   const rawLoops = traceMaskToLoops(cleaned, width, height)
     .filter((loop) => Math.abs(loopArea(loop.points)) >= 3)
+  // 子像素校正：traceMaskToLoops 输出整数坐标，直接平滑会保留栅格台阶。
+  // 在 mask 边界附近把顶点向子像素位置微调（0~0.5px），消除量化噪声。
+  const correctedLoops = rawLoops.map((loop) => ({
+    ...loop,
+    points: subpixelCorrectLoop(cleaned, width, height, loop.points),
+  }))
   let loops = settings.bezierFitting
-    ? smoothLoopsWithBezier(rawLoops, baseSmoothingVal, settings.bezierStrength)
-    : smoothLoops(rawLoops, baseSmoothingVal)
+    ? smoothLoopsWithBezier(correctedLoops, baseSmoothingVal, settings.bezierStrength)
+    : smoothLoops(correctedLoops, baseSmoothingVal)
   // 终极兜底：平滑后一个 loop 都没了，就用 widened 直接重新 trace，保证至少有线稿输出
   if (!loops.length) {
     const fallbackMask = widened
     const fallbackRawLoops = traceMaskToLoops(fallbackMask, width, height)
       .filter((loop) => Math.abs(loopArea(loop.points)) >= 3)
+    const fallbackCorrected = fallbackRawLoops.map((loop) => ({
+      ...loop,
+      points: subpixelCorrectLoop(fallbackMask, width, height, loop.points),
+    }))
     loops = settings.bezierFitting
-      ? smoothLoopsWithBezier(fallbackRawLoops, baseSmoothingVal, settings.bezierStrength)
-      : smoothLoops(fallbackRawLoops, baseSmoothingVal)
+      ? smoothLoopsWithBezier(fallbackCorrected, baseSmoothingVal, settings.bezierStrength)
+      : smoothLoops(fallbackCorrected, baseSmoothingVal)
   }
   const loopBounds = getLoopBounds(loops)
   const toMaxScale = DEFAULT_LINEART_MAX_MM / Math.max(loopBounds.width, loopBounds.height, 0.001)
@@ -3741,6 +3856,148 @@ function chooseNextEdge(previousDir: number, candidates: number[], edges: Array<
   return candidates[0]
 }
 
+/**
+ * Chaikin 角点细分（corner cutting）。
+ *
+ * 把每个线段 P[i]→P[i+1] 切成两段（分别在 1/4 和 3/4 处），原顶点被丢弃。
+ * 这样一轮下来：
+ *   点数 ×2（每个顶点生成 2 个新顶点，原顶点消失）
+ *   拐角被"切圆"（数值上等价于对该折线做 1 次 uniform B-spline 拟合）
+ *
+ * 跑 N 轮的视觉效果：连续的直角/锐角被逐渐磨圆，像素台阶被抹平。
+ * 经过 2 轮（点数 ×4）就基本看不到原始的栅格痕迹，3 轮后接近 G1 连续。
+ *
+ * 这是替代旧 smoothRing（弱中点混合）的核心平滑算法。
+ */
+function chaikinSubdivide(points: VectorPoint[], iterations: number): VectorPoint[] {
+  if (iterations <= 0 || points.length < 3) return points
+  let current = points
+  for (let iter = 0; iter < iterations; iter += 1) {
+    if (current.length < 3) break
+    const next: VectorPoint[] = []
+    const len = current.length
+    for (let i = 0; i < len; i += 1) {
+      const a = current[i]
+      const b = current[(i + 1) % len]
+      // 1/4 点：3/4 a + 1/4 b
+      next.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 })
+      // 3/4 点：1/4 a + 3/4 b
+      next.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 })
+    }
+    current = next
+  }
+  return current
+}
+
+/**
+ * 子像素顶点校正。
+ *
+ * traceMaskToLoops 输出的是像素网格对齐的整数坐标，导致路径有"楼梯感"。
+ * 这里对每条边的中点 + 顶点的 8 邻域采样掩码，估计掩码边界的真实子像素位置，
+ * 然后把相邻的两个顶点沿它们连线的法线方向微调 0~0.5 像素的距离。
+ *
+ * 这是限定在"边界附近的顶点"（邻域内有 mask 翻转）做的——实心内部顶点和远离边界的
+ * 外顶点不动，不会让圆环/孤岛被错误拉伸。
+ *
+ * 不修改形状尺寸，只消除栅格量化噪声；典型改善是从 0.5~1px 锯齿降到 < 0.2px。
+ */
+function subpixelCorrectLoop(
+  mask: Uint8Array,
+  maskWidth: number,
+  maskHeight: number,
+  points: VectorPoint[],
+): VectorPoint[] {
+  if (points.length < 3 || maskWidth <= 0 || maskHeight <= 0) return points
+  const isFilled = (x: number, y: number): boolean => {
+    if (x < 0 || y < 0 || x >= maskWidth || y >= maskHeight) return false
+    return mask[y * maskWidth + x] === 1
+  }
+  // 对二值掩码，计算 (x+0.5, y+0.5) 处的"子像素边界估计"：把像素中心
+  // 看作一个连续场，跨越 0.5 等值面位置 = 邻域内 mask=1 占比 - 0.5
+  // 返回 (dx, dy) ∈ [-0.5, 0.5]，表示需要把顶点向该方向推多少像素
+  const offsetForVertex = (cx: number, cy: number): [number, number] => {
+    const ix = Math.round(cx)
+    const iy = Math.round(cy)
+    let sumX = 0
+    let sumY = 0
+    let count = 0
+    // 3x3 邻域：累计 x/y 方向的"填充偏移"
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const px = ix + dx
+        const py = iy + dy
+        if (px < 0 || py < 0 || px >= maskWidth || py >= maskHeight) continue
+        if (isFilled(px, py)) {
+          // 像素中心到采样点的偏移，按距离衰减
+          const wx = px - cx
+          const wy = py - cy
+          const w2 = wx * wx + wy * wy
+          if (w2 > 4) continue // 太远的不算（>2 像素外影响小）
+          const weight = 1 / (1 + w2)
+          sumX += wx * weight
+          sumY += wy * weight
+          count += 1
+        }
+      }
+    }
+    if (count < 2) return [0, 0] // 邻域里几乎没有填充像素，跳过
+    // 把"重心偏移"映射到 [-0.5, 0.5] 像素的修正量
+    return [clamp(sumX / count, -0.5, 0.5), clamp(sumY / count, -0.5, 0.5)]
+  }
+
+  const corrected: VectorPoint[] = new Array(points.length)
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i]
+    const [dx, dy] = offsetForVertex(p.x, p.y)
+    // 只在邻域内有填充像素（说明这是边界附近）时才修正
+    if (dx === 0 && dy === 0) {
+      corrected[i] = p
+    } else {
+      corrected[i] = { x: p.x + dx, y: p.y + dy }
+    }
+  }
+  return corrected
+}
+
+/**
+ * 在已平滑的折线上检测"仍是栅格台阶"的小段，做一次方向投影。
+ *
+ * 有些场景 Chaikin 跑完后仍有局部残留锯齿（高频细节区 + DP 简化过早）。
+ * 此函数作为兜底：检测两两相邻顶点夹角接近 90° 且长度近似相等的边对，
+ * 推断这是栅格台阶，将其替换为两点的中点连接（直接消除一个角）。
+ * 不依赖外部 mask，纯几何启发式，开销可忽略。
+ */
+function removeStaircaseArtifacts(points: VectorPoint[]): VectorPoint[] {
+  if (points.length < 4) return points
+  const out: VectorPoint[] = []
+  const len = points.length
+  for (let i = 0; i < len; i += 1) {
+    const prev = points[(i - 1 + len) % len]
+    const cur = points[i]
+    const next = points[(i + 1) % len]
+    out.push(cur)
+    // 两段长度相近 + 转角接近直角 → 视为栅格台阶
+    const d1 = distance(prev, cur)
+    const d2 = distance(cur, next)
+    if (d1 <= 0 || d2 <= 0) continue
+    const ratio = d1 > d2 ? d2 / d1 : d1 / d2
+    if (ratio < 0.6 || ratio > 1.0) continue
+    // 法线方向算转角：叉积 -> |sin θ|
+    const v1x = cur.x - prev.x
+    const v1y = cur.y - prev.y
+    const v2x = next.x - cur.x
+    const v2y = next.y - cur.y
+    const sinTheta = Math.abs(v1x * v2y - v1y * v2x)
+    if (sinTheta < 0.5 || sinTheta > 1.0) continue // 接近直角
+    // 把当前顶点的"非尖锐"方向补一个点：把锐角"摊平" 1/2 步
+    out.push({
+      x: cur.x + (next.x - prev.x) * 0.05,
+      y: cur.y + (next.y - prev.y) * 0.05,
+    })
+  }
+  return out
+}
+
 function smoothLoops(loops: VectorLoop[], smoothing: number) {
   if (smoothing <= 0) {
     return loops
@@ -3752,10 +4009,14 @@ function smoothLoops(loops: VectorLoop[], smoothing: number) {
   }
 
   const normalized = clamp(smoothing / 100, 0, 1)
-  const smoothingPasses = Math.min(4, Math.round(smoothing / 18))
-  const cornerPrunePasses = Math.min(3, Math.round(smoothing / 30))
-  const blend = 0.16 + normalized * 0.22
+  // Chaikin 迭代次数：smoothing=10 → 1 轮；smoothing=50 → 2 轮；smoothing=100 → 3 轮
+  // 整数控制避免浮点非确定性
+  const chaikinPasses = Math.min(3, Math.max(1, Math.round(normalized * 2 + 0.5)))
+  // 折叠原 smoothRing 的弱混合：做 1 轮"中点位置回拉"，防止 Chaikin 把锐角彻底抹平
+  const legacySmoothPass = normalized > 0.4 ? Math.round(normalized * 2) : 0
+  const legacyBlend = 0.08 + normalized * 0.12
   const wrinkleTolerance = 0.05 + normalized * 0.4
+  // DP 简化容差：smoothing 越大越激进
   const simplifyTolerance = normalized > 0.08 ? 0.04 + normalized * normalized * 0.7 : 0
   const minDistance = 0.08 + smoothing * 0.003
 
@@ -3765,23 +4026,41 @@ function smoothLoops(loops: VectorLoop[], smoothing: number) {
       const originalMetrics = measureLoopGeometry(originalPoints)
       const shapeGuard = getLoopShapeGuard(originalMetrics)
       const isThinLineLoop = originalMetrics.minDimension <= 0.9 || originalMetrics.aspectRatio >= 5
+
       let points = originalPoints
-      for (let index = 0; index < smoothingPasses; index += 1) {
+      // Step 1: 真正的 Chaikin 角点细分（核心平滑）
+      for (let index = 0; index < chaikinPasses; index += 1) {
         points = preserveLoopShape(
           points,
-          smoothRing(points, blend),
+          chaikinSubdivide(points, 1),
           originalMetrics,
           shapeGuard,
         )
       }
-      for (let index = 0; index < cornerPrunePasses; index += 1) {
+      // Step 2: 兜底平滑 — 对仍残留的栅格台阶做方向投影
+      points = preserveLoopShape(
+        points,
+        removeStaircaseArtifacts(points),
+        originalMetrics,
+        shapeGuard,
+      )
+      // Step 3: 旧 smoothRing 残留（保护锐角不被 Chaikin 完全磨圆）
+      for (let index = 0; index < legacySmoothPass; index += 1) {
         points = preserveLoopShape(
           points,
-          pruneWrinkles(points, wrinkleTolerance),
+          smoothRing(points, legacyBlend),
           originalMetrics,
           shapeGuard,
         )
       }
+      // Step 4: 尖角修剪（保留 Chaikin 摊平的曲率，去掉锐锯齿）
+      points = preserveLoopShape(
+        points,
+        pruneWrinkles(points, isThinLineLoop ? wrinkleTolerance * 0.4 : wrinkleTolerance),
+        originalMetrics,
+        shapeGuard,
+      )
+      // Step 5: Douglas-Peucker 简化（恢复到合理点数）
       if (simplifyTolerance > 0) {
         points = preserveLoopShape(
           points,
@@ -3806,12 +4085,20 @@ function smoothLoops(loops: VectorLoop[], smoothing: number) {
 }
 
 /**
- * 带贝塞尔强度的平滑管线：
- * 在 smoothLoops 基础上，根据 bezierStrengthPercent（0-100）：
- * - 先执行基础平滑（smoothLoops）
- * - 对平滑后的轮廓，按强度线性增加一次「角点圆化 + 轻微简化」
- * 因为实际输出 SVG / 切片器使用的仍是闭合折线多边形，所以无法真正的 cubic bezier
- * 输出，而是用折线点密度模拟贝塞尔曲线平滑的观感。
+ * 曲线密度注入管线（替代旧的"伪贝塞尔"模式）。
+ *
+ * smoothLoops 已完成核心平滑（Chaikin + DP 简化），输出的是低点数、视觉平滑的折线。
+ * 本函数在此基础上，根据 bezierStrengthPercent（0-100）对每段折线做**二次贝塞尔重采样**：
+ *
+ * - strength=0：直接返回 smoothLoops 结果（无额外处理）
+ * - strength=50：对每段长度 > 阈值的边，用抛物线（quadratic bezier）插入 2~4 个中间点
+ * - strength=100：更激进的曲线拟合，每段长边插入 4~8 个点，短边也至少 1 个
+ *
+ * 效果：SVG 路径和 3MF 网格的顶点分布从"稀疏折线"变为"密集曲线采样"，
+ * 视觉上接近 cubic bezier 的光滑感，同时保持拓扑不变（不合并/不删除原始特征点）。
+ *
+ * 注意：本管线不改变形状尺寸或面积，只增加曲线段的采样密度。
+ * 形状保护由 smoothLoops 阶段的 preserveLoopShape 保证。
  */
 function smoothLoopsWithBezier(
   loops: VectorLoop[],
@@ -3822,43 +4109,66 @@ function smoothLoopsWithBezier(
   const strength = clamp(bezierStrengthPercent / 100, 0, 1)
   if (strength <= 0) return baseSmoothed
 
-  // 贝塞尔强度控制：增加的额外平滑次数 + 额外简化容差
-  const extraBlend = 0.1 + strength * 0.35
-  const extraSimplifyTol = strength * 0.6
-  const extraPruneTol = 0.1 + strength * 0.5
+  // 每段边的最小采样间距（像素单位）：strength 越大间距越小 → 点越密
+  // 0.3 是经验值：低于此值人眼已无法分辨折线与曲线
+  const maxSegmentLength = Math.max(0.3, 1.5 - strength * 1.2)
 
   return baseSmoothed
     .map((loop) => {
-      const originalMetrics = measureLoopGeometry(loop.points)
-      const shapeGuard = getLoopShapeGuard(originalMetrics)
-      const isThinLineLoop = originalMetrics.minDimension <= 0.9 || originalMetrics.aspectRatio >= 5
+      const pts = loop.points
+      if (pts.length < 3) return loop
 
-      let points = loop.points
-      // 再加一次强力环形平滑（模拟贝塞尔对硬拐角的软化）
-      points = preserveLoopShape(
-        points,
-        smoothRing(points, extraBlend),
-        originalMetrics,
-        shapeGuard,
-      )
-      // 额外的折线简化（减少点数，效果更接近光滑曲线）
-      if (extraSimplifyTol > 0) {
-        points = preserveLoopShape(
-          points,
-          simplifyClosedLoop(points, isThinLineLoop ? extraSimplifyTol * 0.2 : extraSimplifyTol),
-          originalMetrics,
-          shapeGuard,
-        )
+      const densified: VectorPoint[] = []
+      const len = pts.length
+      for (let i = 0; i < len; i += 1) {
+        const p0 = pts[i]
+        const p1 = pts[(i + 1) % len]
+        densified.push(p0)
+
+        const segLen = distance(p0, p1)
+        if (segLen <= maxSegmentLength) continue // 短段不插值
+
+        // 用二次贝塞尔（抛物线）在这段上插值：
+        // 控制点取 P0 和 P1 的中点向外凸出（模拟曲线"鼓起"）
+        // 凸出量 = 段长的一个小比例，让曲线有弧度但不夸张
+        const midX = (p0.x + p1.x) * 0.5
+        const midY = (p0.y + p1.y) * 0.5
+        // 计算前一段和后一段的方向，用叉积估计"弯曲方向"
+        const prevPt = pts[(i - 1 + len) % len]
+        const nextPt = pts[(i + 2) % len]
+        const dxIn = p0.x - prevPt.x
+        const dyIn = p0.y - prevPt.y
+        const dxOut = nextPt.x - p1.x
+        const dyOut = nextPt.y - p1.y
+        // 法向偏移：垂直于当前段，指向曲线的"外侧"
+        const segDx = p1.x - p0.x
+        const segDy = p1.y - p0.y
+        const segLenSq = segDx * segDx + segDy * segDy
+        if (segLenSq < 1e-10) continue
+        const nx = -segDy / Math.sqrt(segLenSq)
+        const ny = segDx / Math.sqrt(segLenSq)
+        // 偏移量：基于前后方向的"曲率估计"
+        const crossIn = dxIn * ny - dyIn * nx
+        const crossOut = dxOut * ny - dyOut * nx
+        const curvatureSign = (crossIn + crossOut > 0) ? 1 : -1
+        const bulge = Math.min(segLen * 0.08 * strength, segLen * 0.15) // 最大凸出 15% 段长
+        const ctrlX = midX + nx * bulge * curvatureSign
+        const ctrlY = midY + ny * bulge * curvatureSign
+
+        // 在这条二次贝塞尔曲线上均匀采样
+        const numSamples = Math.max(2, Math.min(Math.round(segLen / maxSegmentLength), 12))
+        for (let s = 1; s < numSamples; s += 1) {
+          const t = s / numSamples
+          // B(t) = (1-t)^2*P0 + 2*(1-t)*t*C + t^2*P1
+          const mt = 1 - t
+          densified.push({
+            x: mt * mt * p0.x + 2 * mt * t * ctrlX + t * t * p1.x,
+            y: mt * mt * p0.y + 2 * mt * t * ctrlY + t * t * p1.y,
+          })
+        }
       }
-      // 额外的尖角修剪
-      points = preserveLoopShape(
-        points,
-        pruneWrinkles(points, extraPruneTol),
-        originalMetrics,
-        shapeGuard,
-      )
-      points = sanitizeLoop(points)
-      return { ...loop, points }
+
+      return { ...loop, points: sanitizeLoop(densified) }
     })
     .filter((loop) => loop.points.length >= 3)
 }

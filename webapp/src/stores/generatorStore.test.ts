@@ -197,4 +197,23 @@ describe('useGeneratorStore persistence', () => {
 
     expect(useGeneratorStore.getState().lineartSettings.smoothing).toBe(20)
   })
+
+  it('strips the removed bFaceReverseStack flag from legacy light-relief snapshots', async () => {
+    // schema v4：B 面「反向堆叠」开关已删除（该形态不可打印）。
+    // 老快照里残留的死键必须被清掉，避免继续参与字段合并。
+    localStorage.setItem('lineart-baseplate-generator-settings-light-relief', JSON.stringify({
+      lightReliefSettings: { bFaceReverseStack: true, faceBHeightMm: 1.4 },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    const settings = useGeneratorStore.getState().lightReliefSettings as unknown as Record<string, unknown>
+    expect('bFaceReverseStack' in settings).toBe(false)
+    // 其余自定义值保留
+    expect(settings.faceBHeightMm).toBe(1.4)
+    const saved = JSON.parse(
+      localStorage.getItem('lineart-baseplate-generator-settings-light-relief') ?? '{}',
+    )
+    expect('bFaceReverseStack' in saved.lightReliefSettings).toBe(false)
+  })
 })
