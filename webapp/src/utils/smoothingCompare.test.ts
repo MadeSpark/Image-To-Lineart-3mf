@@ -9,86 +9,37 @@ vi.setConfig({ testTimeout: 600_000, hookTimeout: 120_000 })
 /**
  * 线稿平滑优化对比测试（2026-09-01）。
  *
- * 用用户提供的 ChatGPT 双角色图（黑色描边动漫线稿）验证：
+ * 用用户提供的双角色图（黑色描边动漫线稿，已存 webapp/test-assets/testimg.png）验证：
  * 1. Chaikin 细分 + 子像素校正是否消除了像素台阶锯齿
  * 2. 不同 smoothing 值下的点数/平滑度变化趋势
  * 3. bezier 密度注入模式的效果
  *
- * 输出 SVG 到 ./smoothing-compare-output/ 供肉眼对比。
+ * ⚠️ **默认跳过**（2026-09-01）：这是调优期的比对手册，不是回归测试。
+ * - 单次运行 6~7 分钟（大图完整管线 ×6），会把日常 `npm test` 从 30s 拖到 7min+
+ * - 需要重新对比时：把 `it.skip` 改回 `it`，再执行
+ *   `npx vitest run src/utils/smoothingCompare.test.ts`
+ * 输出 SVG 到 .debug/smoothing-compare-output/ 供肉眼对比。
  */
 
-// ---- 类型声明（与 generator.ts 对齐，避免循环依赖）----
-interface VectorPoint { x: number; y: number }
-interface VectorLoop { closed: boolean; points: VectorPoint[] }
+// ---- 类型：全部直接从 generator 导入真实定义 ----
+// ⚠️ 2026-09-01 修正：此前此处手抄了一份类型定义，BaseplateSettings 新增
+// rectangleSizeMode / rectangleScalePercent 后手抄版本过时，导致 `npm run build`
+// 的 tsc -b 报 TS2322 中断构建（vitest 用 esbuild 不做类型检查所以测试仍绿）。
+// 手抄类型是"必然漂移"的反模式——改为 import type，类型随定义自动同步。
+import type {
+  VectorLoop,
+  LineartSettings,
+  BaseplateSettings,
+  ExtrudeSettings,
+  SourceImage,
+} from '../types/generator'
 
-interface LineartSettings {
-  detail: number
-  threshold: number
-  thresholdAuto: boolean
-  targetColor: string
-  despeckle: number
-  expandStrokeMm: number
-  shrinkStrokeMm: number
-  smoothing: number
-  invert: boolean
-  mirror: boolean
-  autoOptimize: boolean
-  protectFineDetail: boolean
-  uploadPreprocess: boolean
-  bezierFitting: boolean
-  bezierStrength: number
-}
+// 2026-09-01：测试图已挪到 webapp/test-assets/（根目录去重后仅存一份，与 _testimg.png 同源）
+const TEST_IMAGE_PATH = path.resolve(__dirname, '../../test-assets/testimg.png')
+// 调试产物输出到 gitignore 的 .debug/ 目录，不再污染 src/
+const OUTPUT_DIR = path.resolve(__dirname, '../../.debug/smoothing-compare-output')
 
-interface BaseplateSettings {
-  template: string
-  widthMm: number
-  heightMm: number
-  diameterMm: number
-  marginMm: number
-  baseColor: string
-  lineColor: string
-  expandMm: number
-  imagePlacement: string
-}
-
-interface ExtrudeSettings {
-  baseThicknessMm: number
-  lineHeightMm: number
-  lineThicknessMm: number
-  minLineWidthMm: number
-}
-
-interface SourceImage {
-  name: string
-  width: number
-  height: number
-  dataUrl: string
-}
-
-interface ProcessedArtwork {
-  lineLoops: VectorLoop[]
-  baseLoops: VectorLoop[]
-  boardWidthMm: number
-  boardHeightMm: number
-  pixelsPerMm: number
-  previews: {
-    lineartDataUrl: string
-    baseplateDataUrl: string
-    compositeDataUrl: string
-  }
-  stats: Record<string, unknown>
-}
-
-const TEST_IMAGE_PATH = path.resolve(__dirname, '../../../ChatGPT Image 2026年8月20日 23_54_37(20260823-16332.png')
-const OUTPUT_DIR = path.resolve(__dirname, '../smoothing-compare-output')
-
-let processArtwork: (input: {
-  sourceImage: SourceImage | null
-  importedLineart: null
-  lineartSettings: LineartSettings
-  baseplateSettings: BaseplateSettings
-  extrudeSettings: ExtrudeSettings
-}) => Promise<ProcessedArtwork>
+let processArtwork: typeof import('../utils/generator').processArtwork
 
 // node-canvas 提供真正的 Image 解码（jsdom 默认 Canvas 不解码 raster）
 let canvasPkg: typeof import('canvas') | null = null
@@ -115,6 +66,8 @@ const rectangleSettings: BaseplateSettings = {
   template: 'rectangle',
   widthMm: 150,
   heightMm: 100,
+  rectangleSizeMode: 'manual',
+  rectangleScalePercent: 100,
   diameterMm: 80,
   marginMm: 2,
   baseColor: '#ffffff',
@@ -236,13 +189,20 @@ describe('smoothing optimization comparison', () => {
   let sourceImage: SourceImage
 
   beforeAll(async () => {
+    // 测试图缺失时优雅跳过（克隆仓库 / 精简测试资产后仍可跑其余测试）
+    const exists = await fs.access(TEST_IMAGE_PATH).then(() => true).catch(() => false)
+    if (!exists) {
+      console.warn(`[skip] 测试图不存在：${TEST_IMAGE_PATH}`)
+      sourceImage = { name: 'missing.png', width: 1, height: 1, dataUrl: '' }
+      return
+    }
     sourceImage = await loadImageAsSource(TEST_IMAGE_PATH)
   }, 60000)
 
   async function runAndDump(
     label: string,
     settings: Partial<LineartSettings>,
-  ): Promise<{ artwork: ProcessedArtwork; stats: ReturnType<typeof loopStats> }> {
+  ): Promise<{ artwork: Awaited<ReturnType<typeof processArtwork>>; stats: ReturnType<typeof loopStats> }> {
     const merged: LineartSettings = { ...defaultLineartSettings, ...settings }
     const artwork = await processArtwork({
       sourceImage,
@@ -273,7 +233,7 @@ describe('smoothing optimization comparison', () => {
     return { artwork, stats }
   }
 
-  it('compares smoothing=10 vs 50 vs 100 (no bezier)', async () => {
+  it.skip('compares smoothing=10 vs 50 vs 100 (no bezier)', async () => {
     console.log('\n=== Smoothing Comparison (No Bezier) ===\n')
 
     const s10 = await runAndDump('smooth-10', { smoothing: 10 })
@@ -295,7 +255,7 @@ describe('smoothing optimization comparison', () => {
     console.log(`\nSVG outputs written to: ${OUTPUT_DIR}`)
   })
 
-  it('compares bezier off vs bezier on (strength=70)', async () => {
+  it.skip('compares bezier off vs bezier on (strength=70)', async () => {
     console.log('\n=== Bezier Mode Comparison (smoothing=50) ===\n')
 
     const noBezier = await runAndDump('bezier-off-smooth50', {
@@ -319,7 +279,7 @@ describe('smoothing optimization comparison', () => {
 })
 
 function buildCompareSvg(
-  artwork: ProcessedArtwork,
+  artwork: Awaited<ReturnType<typeof processArtwork>>,
   title: string,
   stats: ReturnType<typeof loopStats>,
 ): string {

@@ -2,6 +2,10 @@ import { Box, LoaderCircle } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { BaseplateSettings, ExtrudeSettings, LightReliefSettings, LineartSettings, ProcessedArtwork, SealSettings, WorkMode } from '@/types/generator'
+// ?worker&inline：worker 代码以 base64 内联进主包，运行时用 Blob URL 创建。
+// 这是"双击 index.html 离线可用"的必要条件——外置 worker 文件在 file:// 协议下
+// 会被浏览器跨域策略拦截，内联 Blob Worker 则无此限制。
+import ThreeDPreviewWorker from '@/workers/threeDPreview.worker?worker&inline'
 
 let modelViewerImportPromise: Promise<unknown> | null = null
 const previewModelCache = new WeakMap<ProcessedArtwork, Map<string, string>>()
@@ -145,7 +149,15 @@ export function ThreeDModelViewer({
     }
 
     let cancelled = false
-    const worker = new Worker(new URL('../workers/threeDPreview.worker.ts', import.meta.url), { type: 'module' })
+    // 个别受限环境（如极旧的浏览器）无法构造 Worker，给出可读错误而不是让组件卡在"构建中"
+    let worker: Worker
+    try {
+      worker = new ThreeDPreviewWorker()
+    } catch {
+      setBuildError('当前浏览器不支持 3D 预览（Web Worker 不可用）')
+      setIsBuilding(false)
+      return
+    }
     const requestId = Date.now()
 
     const assignModel = async () => {
@@ -200,7 +212,13 @@ export function ThreeDModelViewer({
       })
     }
 
-    void assignModel()
+    void assignModel().catch(() => {
+      // ensureModelViewerDefined 的动态 import 失败（理论上线内联后不会发生）等未捕获异常兜底
+      if (!cancelled) {
+        setBuildError('3D 预览构建失败，请稍后重试')
+        setIsBuilding(false)
+      }
+    })
 
     return () => {
       cancelled = true

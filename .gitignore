@@ -4,8 +4,20 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Node 依赖与构建产物
+node_modules/
 webapp/node_modules/
 webapp/dist/
 webapp/tmp/
 webapp/.vite/
 webapp/coverage/
+
+# 调试 / 临时产物
+.dbg/
+webapp/.debug/
+
+# Git 仓库损坏时的本地备份目录
+.git-backup-*/
+
+# Cloudflare Wrangler 本地状态
+worker/**/.wrangler/

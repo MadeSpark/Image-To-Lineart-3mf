@@ -1,8 +1,13 @@
 import { strFromU8, unzipSync } from 'fflate'
 import type { BaseplateSettings, PrintBedSettings, ThreeMfTemplateProfile } from '@/types/generator'
 import { assertThreeMfArchiveBudget, assertThreeMfFile, assertThreeMfMetadataSize } from './importLimits'
+// ?inline：预设模板以 base64 data URL 打进主包。此前用 '/presets/...3mf' 绝对路径
+// 运行时 fetch，在 file://（双击打开）和宝塔子目录部署下都会 404。
+// data URL 可以直接被 fetch()，Home.tsx 已有失败降级（Bambu A1 内置参数）。
+// ⚠️ 必须用相对路径：本模块被 3D 预览 Web Worker 引用，vite:worker 子构建里
+// vite-tsconfig-paths 的 `@/` 别名不生效，用 `@/assets/...` 会导致构建失败。
+import defaultTemplateDataUrl from '../assets/default-print-profile.3mf?inline'
 
-const DEFAULT_TEMPLATE_URL = '/presets/default-print-profile.3mf'
 const DEFAULT_TEMPLATE_NAME = '预设参数.3mf'
 const FALLBACK_APPLICATION_NAME = 'BambuStudio-02.07.01.62'
 const FALLBACK_SLICE_INFO = [
@@ -16,7 +21,7 @@ const FALLBACK_SLICE_INFO = [
 ].join('\n')
 
 export async function loadDefaultThreeMfTemplateProfile() {
-  const response = await fetch(DEFAULT_TEMPLATE_URL)
+  const response = await fetch(defaultTemplateDataUrl)
   if (!response.ok) {
     throw new Error('默认 3MF 打印模板加载失败')
   }

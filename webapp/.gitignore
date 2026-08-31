@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 测试 / 调试产物（smoothingCompare、realImageLineDebug 等 dump 的 SVG/PNG）
+.debug/
+
 # 环境变量配置（包含 Worker URL 等部署相关配置，不应提交到仓库）
 .env
 .env.local

@@ -2,6 +2,13 @@
 
 import type * as React from 'react'
 
+// 3MF 预设模板以 base64 data URL 内联（vite ?inline 后缀），
+// 供 threeMfProfile.ts 在无服务器环境下 fetch 使用
+declare module '*.3mf?inline' {
+  const src: string
+  export default src
+}
+
 interface ImportMetaEnv {
   readonly VITE_VISITOR_COUNTER_URL?: string
 }

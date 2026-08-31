@@ -11,11 +11,23 @@ const versionFile = JSON.parse(
 // https://vite.dev/config/
 export default defineConfig({
   base: './',
+  // 让 vite 把 .3mf 识别为二进制资产（配合 `?inline` 后缀转 base64 data URL）；
+  // 缺了它 vitest/构建会把 default-print-profile.3mf?inline 当 JS 源码解析报错
+  assetsInclude: ['**/*.3mf'],
   define: {
     __APP_VERSION__: JSON.stringify(versionFile.version ?? '0.0.0'),
   },
   build: {
-    sourcemap: 'hidden',
+    // 单文件部署（双击 index.html / 宝塔静态站）必需：
+    // 1. 关闭 sourcemap —— dist 不产生 .map 散件
+    // 2. inlineDynamicImports —— model-viewer 懒加载块合并进主包，
+    //    否则内联后的 HTML 会在 file:// 下因动态 import 被 CORS 拦截而 3D 预览白屏
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true,
+      },
+    },
   },
   test: {
     environment: 'jsdom',

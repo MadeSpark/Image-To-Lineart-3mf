@@ -6,64 +6,23 @@ import { JSDOM } from 'jsdom'
 /**
  * 调试 3MF 与预览线宽不一致问题。
  *
- * 使用 _testimg.png（与用户提供的 ChatGPT 图同为 1685×934，feature 结构近似），
- * 用 jsdom + canvas 包注入真实的 DOM/Canvas/Image，
+ * 使用 webapp/test-assets/testimg.png（与用户提供的 ChatGPT 图同为 1685×934，
+ * feature 结构近似），用 jsdom + canvas 包注入真实的 DOM/Canvas/Image，
  * 让 generator.ts 的真实 processArtwork 流程能在 Node 里完整跑通。
  *
  * 然后导出：preview 的真实 SVG（rasterize Loops → trace → 平滑），
  * 以及 3MF 用的 rasterize mask（同样 polygons 在更低 pixelsPerMm 下重新 rasterize）。
  *
- * 两者都 dump 成 PNG 文件到 `./line-debug-output/`，
+ * 两者都 dump 成 PNG 文件到 `.debug/line-debug-output/`，
  * 肉眼比较线粗是否一致。
+ *
+ * ⚠️ 2026-09-01：类型改为 import type（手抄类型在 BaseplateSettings 新增字段后
+ * 导致 TS2322 构建中断，手抄是"必然漂移"的反模式）。
+ * ⚠️ 2026-09-01：测试图已从根目录 _testimg.png 挪到 webapp/test-assets/testimg.png。
  */
 
-interface VectorPoint { x: number; y: number }
-interface VectorLoop { closed: boolean; points: VectorPoint[] }
-
-interface ProcessedArtwork {
-  lineLoops: VectorLoop[]
-  baseLoops: VectorLoop[]
-  boardWidthMm: number
-  boardHeightMm: number
-  pixelsPerMm: number
-  previews: {
-    lineartDataUrl: string
-    baseplateDataUrl: string
-    compositeDataUrl: string
-  }
-}
-
-interface LineartSettings {
-  detail: number
-  threshold: number
-  thresholdAuto: boolean
-  targetColor: string
-  despeckle: number
-  expandStrokeMm: number
-  shrinkStrokeMm: number
-  smoothing: number
-  invert: boolean
-  mirror: boolean
-  autoOptimize: boolean
-  protectFineDetail: boolean
-  uploadPreprocess: boolean
-  bezierFitting: boolean
-  bezierStrength: number
-}
-
-interface BaseplateSettings {
-  template: 'rectangle' | 'outline'
-  expandMm: number
-  widthMm: number
-  heightMm: number
-  rectangleSizeMode: string
-  rectangleScalePercent: number
-  diameterMm: number
-  marginMm: number
-  imagePlacement: string
-  lineColor: string
-  baseColor: string
-}
+// ---- 类型：直接从真实定义导入（与 smoothingCompare.test.ts 同一约定） ----
+import type { VectorLoop, LineartSettings, BaseplateSettings, ExtrudeSettings } from '../types/generator'
 
 const realSettings = {
   detail: 100,
@@ -83,7 +42,7 @@ const realSettings = {
   bezierStrength: 100,
 } as const satisfies LineartSettings
 
-// 用户图像（用 _testimg.png 因为它与 ChatGPT 图同为 1685x934）
+// 用户图像（用 testimg.png 因为它与 ChatGPT 图同为 1685x934）
 const baseSettings = {
   template: 'rectangle',
   expandMm: 0,
@@ -103,7 +62,7 @@ const extrudeSettings = {
   lineThicknessMm: 0.2,
   lineHeightMm: 0.2,
   minLineWidthMm: 0.4,
-}
+} as const satisfies ExtrudeSettings
 
 const printBedSettings = { widthMm: 256, depthMm: 256, spacingMm: 8 }
 
@@ -135,10 +94,10 @@ beforeAll(async () => {
 })
 
 describe('real-image line width consistency', () => {
-  it('runs the full pipeline on _testimg.png and dumps mask side-by-side', async () => {
+  it('runs the full pipeline on testimg.png and dumps mask side-by-side', async () => {
     console.log('[timing] test start')
     const t0 = Date.now()
-    const imgPath = path.resolve(process.cwd(), '..', '_testimg.png')
+    const imgPath = path.resolve(process.cwd(), 'test-assets', 'testimg.png')
     const exists = await fs.access(imgPath).then(() => true).catch(() => false)
     if (!exists) {
       console.warn('[skip] image not found')
@@ -147,13 +106,13 @@ describe('real-image line width consistency', () => {
     const imgBuf = await fs.readFile(imgPath)
     const dataUrl = `data:image/png;base64,${imgBuf.toString('base64')}`
     const { processArtwork, chooseSingleExportPixelsPerMm } = await import('@/utils/generator')
-    const sourceImage = { name: '_testimg.png', width: 1685, height: 934, dataUrl }
+    const sourceImage = { name: 'testimg.png', width: 1685, height: 934, dataUrl }
     const result = await processArtwork({
       sourceImage,
       importedLineart: null,
       lineartSettings: realSettings as LineartSettings,
       baseplateSettings: baseSettings,
-      extrudeSettings: extrudeSettings as any,
+      extrudeSettings,
       workMode: 'filigree',
     })
     const wMm = result.boardWidthMm
@@ -167,7 +126,7 @@ describe('real-image line width consistency', () => {
     console.log('[diag] source pixelsPerMm (preview) =', pxPreview)
 
     // 直接 dump mask
-    const outDir = path.resolve(process.cwd(), 'line-debug-output')
+    const outDir = path.resolve(process.cwd(), '.debug', 'line-debug-output')
     await fs.mkdir(outDir, { recursive: true })
 
     // 直接复用 generator 的 rasterize 函数
