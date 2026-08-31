@@ -14,7 +14,9 @@
 - 三件套：`sourcemap:false` + `inlineDynamicImports:true`（model-viewer 懒加载块，file:// 动态 import 被 CORS 拦）+ `?worker&inline`（Blob worker）。
 - ⚠️ `assetsInclude: ['**/*.3mf']` 必须配（vite 默认不认 .3mf，否则 ?inline 被 import-analysis 当 JS 解析报错，vitest 5 文件连挂）。
 - ⚠️ **worker 子构建不认 `@/` 别名**（vite-tsconfig-paths 不进 vite:worker 子图）：被 worker 引用链拖进去的模块里的资产 import 必须用**相对路径**（如 `../assets/default-print-profile.3mf?inline`）。报错指向 worker 文件本身，真实坏 import 在共享模块里。
+- ⚠️ **路由必须有通配兜底**（App.tsx `<Route path="*">`）：http 下直达 /index.html 或子目录部署时 BrowserRouter 无匹配 → 白屏（"No routes matched"）。file:// 走 HashRouter 掩盖此问题，别被双击正常误导。
 - dist 验证：`ls dist/` 仅 index.html；grep `src="\./`、`href="\./`、`/presets/` 应无结果；`<script type="module">` 无 src=全内联。LottieLoader CDN 字符串与 h5bp CSS 注释是 three/normalize.css 源码残留，无害。
+- **交付前 headless 实测**：Chrome headless `--screenshot`+`--dump-dom`+`--enable-logging=stderr` 三件套（零安装）；判据=截图字节量+root 子节点+INFO:CONSOLE 交叉；file:// 中文路径直接传不手动编码；白屏结论必须 dump-dom 复核防时序假象。
 - 测试约定：smoothingCompare / realImageLineDebug 默认手动跑（6~7min / 5min+），测试资产在 `webapp/test-assets/`，调试输出进 `.debug/`。
 - node_modules 半损坏（.bin 空、babel 缺 debug.js、测试全挂）→ `npm install` 修不好，必须 `npm ci`。
 - git 状态：commit 357d255 完成单文件化+清理（约15MB垃圾：.git-backup/、.dbg/、动画/、lithophane.3mf、lineart_converter.py、favicon.svg 等）；favicon 引用已从 index.html 删除。
