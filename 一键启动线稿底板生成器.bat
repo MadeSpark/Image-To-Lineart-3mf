@@ -54,10 +54,13 @@ if not exist "%WEBAPP_DIR%\node_modules" (
 
 echo [3/3] Starting local web app...
 echo Keep this window open while using the app.
+echo 本机访问:  http://localhost:5173
+echo 局域网访问: 用下方 Network 地址（其他设备需与本机同一局域网，
+echo             且首次启动时在 Windows 防火墙弹窗里允许 Node.js 访问）
 echo.
 
 pushd "%WEBAPP_DIR%"
-call "%NPM_CMD%" run dev -- --host 127.0.0.1 --open
+call "%NPM_CMD%" run dev -- --host 0.0.0.0 --open
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 
