@@ -157,6 +157,21 @@ export interface LightReliefSettings {
   bFaceInvert: boolean
 }
 
+/**
+ * 底板预设：一键应用整组配置（底板部分 + 可选的光映浮雕 Z 轴分层部分）。
+ * 目前仅光映浮雕模式在 UI 上暴露（PalettePanel「底板模板选择」上方的预设区块）。
+ */
+export interface BaseplatePreset {
+  /** 预设名，如 "3:2" */
+  name: string
+  /** 一句话摘要，展示在预设卡片上 */
+  description: string
+  /** 应用到底板设置的补丁 */
+  baseplate: Partial<BaseplateSettings>
+  /** 应用到光映浮雕设置的补丁（可选；仅光映浮雕模式） */
+  lightRelief?: Partial<LightReliefSettings>
+}
+
 export interface ThreeMfTemplateProfile {
   sourceName: string
   applicationName: string

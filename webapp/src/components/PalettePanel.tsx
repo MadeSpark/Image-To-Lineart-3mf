@@ -1,6 +1,6 @@
-import { Circle, Frame, RectangleHorizontal, ScanSearch, Scaling, Scissors, SwatchBook } from 'lucide-react'
+import { Circle, Frame, RectangleHorizontal, ScanSearch, Scaling, Scissors, Sparkles, SwatchBook } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { BaseplateSettings, BaseTemplate, ImagePlacement, PrintBedSettings, RectangleSizeMode } from '@/types/generator'
+import type { BaseplatePreset, BaseplateSettings, BaseTemplate, ImagePlacement, PrintBedSettings, RectangleSizeMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
 import { calculateRectangleRatioLayout } from '@/utils/baseplate'
 
@@ -35,6 +35,9 @@ interface PalettePanelProps {
   sourceAspectRatio: number | null
   printBedSettings: PrintBedSettings
   onUpdateSettings: (patch: Partial<BaseplateSettings>) => void
+  /** 一键预设（仅光映浮雕模式传入），渲染在底板模板选择上方 */
+  presets?: BaseplatePreset[]
+  onApplyPreset?: (preset: BaseplatePreset) => void
 }
 
 const rectangleSizeModes: Array<{ value: RectangleSizeMode; label: string }> = [
@@ -74,7 +77,7 @@ const imagePlacements: Array<{
   },
 ]
 
-export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, onUpdateSettings }: PalettePanelProps) {
+export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, onUpdateSettings, presets, onApplyPreset }: PalettePanelProps) {
   const rectangleRatioLayout = sourceAspectRatio
     ? calculateRectangleRatioLayout(
       sourceAspectRatio,
@@ -96,6 +99,46 @@ export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, on
           {settings.template === 'outline' ? '自动轮廓' : settings.template === 'rectangle' ? '矩形' : '圆形'}
         </div>
       </div>
+
+      {presets && presets.length > 0 && onApplyPreset && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+            <Sparkles className="h-3.5 w-3.5" />
+            预设配置
+            <span className="font-normal text-slate-400">（点击一键应用整组参数）</span>
+          </div>
+          <div className="grid gap-2">
+            {presets.map((preset) => {
+              const active =
+                settings.template === preset.baseplate.template &&
+                settings.imagePlacement === preset.baseplate.imagePlacement &&
+                settings.widthMm === preset.baseplate.widthMm &&
+                settings.heightMm === preset.baseplate.heightMm &&
+                settings.marginMm === preset.baseplate.marginMm &&
+                settings.rectangleSizeMode === preset.baseplate.rectangleSizeMode
+              return (
+                <button
+                  key={preset.name}
+                  type="button"
+                  onClick={() => onApplyPreset(preset)}
+                  className={cn(
+                    'rounded-[22px] border p-4 text-left transition',
+                    active
+                      ? 'border-emerald-300 bg-emerald-50/60'
+                      : 'border-amber-200 bg-amber-50/50 hover:border-amber-300 hover:bg-amber-50',
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <Sparkles className={cn('h-4 w-4 shrink-0', active ? 'text-emerald-600' : 'text-amber-500')} />
+                    <div className="text-sm font-semibold text-slate-900">{preset.name}</div>
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-slate-500">{preset.description}</div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {templates.map((template) => {

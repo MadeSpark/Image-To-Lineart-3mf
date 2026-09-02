@@ -19,7 +19,7 @@ import {
   useGeneratorStore,
 } from '@/stores/generatorStore'
 import type { GeneratorSettingsPatch, GeneratorSettingsPayload } from '@/stores/generatorStore'
-import type { BatchSourceItem, ExtrudeSettings, GifFrameSource, LightReliefSettings, PreviewMode, ProcessedArtwork, SealSettings as SealSettingsType, VectorLoop, VectorPoint, WorkMode } from '@/types/generator'
+import type { BaseplatePreset, BatchSourceItem, ExtrudeSettings, GifFrameSource, LightReliefSettings, PreviewMode, ProcessedArtwork, SealSettings as SealSettingsType, VectorLoop, VectorPoint, WorkMode } from '@/types/generator'
 import {
   applyLineartStrokeEdit,
   applyNumberingToArtwork,
@@ -59,6 +59,29 @@ interface ProcessedBatchItem {
 }
 
 const MAKERWORLD_SUPPORT_URL = 'https://makerworld.com.cn/zh/models/2796222-kai-yuan-xian-gao-sheng-cheng-qi-fan-ye-dong-hua-s#profileId-3257232'
+
+// 光映浮雕一键预设（显示在 PalettePanel「底板模板选择」上方，仅光映浮雕模式）
+const LIGHT_RELIEF_PRESETS: BaseplatePreset[] = [
+  {
+    name: '3:2',
+    description: '底板 矩形模板 · 图片裁剪 · 150×100mm · 安全边距 2mm · 长宽模式 · 模型总高 2mm（A 面 0.2mm / B 面 1.7mm）',
+    baseplate: {
+      template: 'rectangle',
+      imagePlacement: 'crop',
+      widthMm: 150,
+      heightMm: 100,
+      marginMm: 2,
+      rectangleSizeMode: 'manual',
+    },
+    lightRelief: {
+      totalHeightMm: 2,
+      faceAZMm: 0,
+      faceAHeightMm: 0.2,
+      faceBZMm: 0.3,
+      faceBHeightMm: 1.7,
+    },
+  },
+]
 
 export default function Home() {
   const {
@@ -107,6 +130,14 @@ export default function Home() {
   const [exportProgressOpen, setExportProgressOpen] = useState(false)
   const [exportProgress, setExportProgress] = useState({ current: 0, total: 0, label: '' })
   const [defaultThreeMfProfile, setDefaultThreeMfProfile] = useState(() => createFallbackThreeMfTemplateProfile())
+
+  // 一键预设：同时应用底板补丁与光映浮雕 Z 轴补丁
+  const handleApplyPreset = (preset: BaseplatePreset) => {
+    updateBaseplateSettings(preset.baseplate)
+    if (preset.lightRelief) {
+      updateLightReliefSettings(preset.lightRelief)
+    }
+  }
   const [templateProfileLoading, setTemplateProfileLoading] = useState(true)
   const [welcomeDialogOpen, setWelcomeDialogOpen] = useState(true)
   const [thanksDialogOpen, setThanksDialogOpen] = useState(false)
@@ -991,6 +1022,8 @@ useEffect(() => {
               sourceAspectRatio={activeSourceAspectRatio}
               printBedSettings={printBedSettings}
               onUpdateSettings={updateBaseplateSettings}
+              presets={workMode === 'light-relief' ? LIGHT_RELIEF_PRESETS : undefined}
+              onApplyPreset={workMode === 'light-relief' ? handleApplyPreset : undefined}
             />
             {workMode === 'seal' ? (
               <SealPanel
