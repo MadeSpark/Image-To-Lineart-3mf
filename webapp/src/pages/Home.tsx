@@ -64,7 +64,6 @@ const MAKERWORLD_SUPPORT_URL = 'https://makerworld.com.cn/zh/models/2796222-kai-
 const LIGHT_RELIEF_PRESETS: BaseplatePreset[] = [
   {
     name: '3:2',
-    description: '底板 矩形模板 · 图片裁剪 · 150×100mm · 安全边距 2mm · 长宽模式 · 模型总高 2mm（A 面 0.2mm / B 面 1.7mm）',
     baseplate: {
       template: 'rectangle',
       imagePlacement: 'crop',

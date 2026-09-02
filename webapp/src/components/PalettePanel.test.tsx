@@ -2,14 +2,13 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PalettePanel } from '@/components/PalettePanel'
 import { defaultBaseplateSettings } from '@/stores/generatorStore'
-import type { BaseplatePreset, PrintBedSettings } from '@/types/generator'
+import type { BaseplatePreset, BaseplateSettings, PrintBedSettings } from '@/types/generator'
 
-const printBedSettings: PrintBedSettings = { widthMm: 256, depthMm: 256 }
+const printBedSettings: PrintBedSettings = { widthMm: 256, depthMm: 256, spacingMm: 0 }
 
 // 与 Home.tsx 中 LIGHT_RELIEF_PRESETS 保持一致（3:2 预设）
 const lightReliefPreset: BaseplatePreset = {
   name: '3:2',
-  description: '底板 矩形模板 · 图片裁剪 · 150×100mm · 安全边距 2mm · 长宽模式 · 模型总高 2mm（A 面 0.2mm / B 面 1.7mm）',
   baseplate: {
     template: 'rectangle',
     imagePlacement: 'crop',
@@ -43,11 +42,13 @@ function renderPanel(presets?: BaseplatePreset[], onApplyPreset?: (preset: Basep
 describe('PalettePanel 一键预设区块', () => {
   afterEach(cleanup)
 
-  it('传入 presets 时在底板模板选择上方渲染预设卡片', () => {
+  it('传入 presets 时在底板模板选择上方渲染预设卡片，卡片文本只有预设名', () => {
     renderPanel([lightReliefPreset], vi.fn())
 
     expect(screen.getByText('预设配置')).toBeTruthy()
     const presetButton = screen.getByRole('button', { name: /3:2/ })
+    // 卡片上除图标外只显示预设名本身，不带描述等附加文本
+    expect(presetButton.textContent).toBe('3:2')
     // 预设区块必须排在底板模板（轮廓底板）按钮之前
     const allButtons = screen.getAllByRole('button')
     expect(allButtons.indexOf(presetButton)).toBeLessThan(allButtons.findIndex((b) => b.textContent?.includes('轮廓底板')))

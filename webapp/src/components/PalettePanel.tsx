@@ -132,7 +132,6 @@ export function PalettePanel({ settings, sourceAspectRatio, printBedSettings, on
                     <Sparkles className={cn('h-4 w-4 shrink-0', active ? 'text-emerald-600' : 'text-amber-500')} />
                     <div className="text-sm font-semibold text-slate-900">{preset.name}</div>
                   </div>
-                  <div className="mt-1 text-xs leading-5 text-slate-500">{preset.description}</div>
                 </button>
               )
             })}
