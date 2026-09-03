@@ -73,9 +73,15 @@ function buildCorsHeaders(allowedOrigins: string, requestOrigin: string | null):
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
-  const allow = requestOrigin && list.includes(requestOrigin) ? requestOrigin : list[0] ?? ''
+  // 只在请求 origin 命中白名单时回显它自己。
+  // 早前未命中时会回显 list[0]（写死的 localhost:5173），浏览器于是报
+  // "The 'Access-Control-Allow-Origin' header has a value '...' that is not equal to the
+  // supplied origin"——把这个接口在任意非白名单来源（宝塔域名、file:// 双击）上都变成必然失败，
+  // 而且报错信息把人往错误方向引。非白名单来源本来就会被下面 403 拦掉，
+  // 与其回显一个错误的 origin，不如干脆不设这个头。
+  const allowOrigin = requestOrigin && list.includes(requestOrigin) ? requestOrigin : null
   return {
-    'Access-Control-Allow-Origin': allow,
+    ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
@@ -86,13 +92,6 @@ function buildCorsHeaders(allowedOrigins: string, requestOrigin: string | null):
 
 function jsonResponse(body: unknown, headers: HeadersInit, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers })
-}
-
-async function readCurrentCount(env: Env): Promise<number> {
-  const raw = await env.VISITOR_COUNT.get(COUNT_KEY)
-  if (!raw) return 0
-  const parsed = parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
 export default {
@@ -125,23 +124,6 @@ export default {
         { headers: { 'X-Visitor-Key': await hashClientIp(request) } },
       ))
       return new Response(response.body, { status: response.status, headers })
-    }
-
-    if (url.pathname === '/health') {
-      return jsonResponse({ ok: true, service: 'visitor-counter' }, headers)
-    }
-
-    if (url.pathname === '/count') {
-      const count = await readCurrentCount(env)
-      return jsonResponse({ count }, headers)
-    }
-
-    if (url.pathname === '/visit' || url.pathname === '/') {
-      // KV 是最终一致性存储，并发场景下用简单原子写入已足够（计数器容忍少量误差）。
-      const current = await readCurrentCount(env)
-      const next = current + 1
-      await env.VISITOR_COUNT.put(COUNT_KEY, String(next))
-      return jsonResponse({ count: next }, headers)
     }
 
     return jsonResponse({ error: 'not found' }, headers, 404)

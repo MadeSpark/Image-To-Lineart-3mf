@@ -20,7 +20,9 @@ class_name = "VisitorCounter"
 tag = "v1"
 new_classes = ["VisitorCounter"]
 
-# 允许调用本 Worker 的前端域名（逗号分隔，不要带尾随斜杠）。
+# 允许调用本 Worker 的前端来源（逗号分隔，不要带尾随斜杠）。
 # 包含本地开发地址 + webapp 公网部署域名。
+# `null` 是浏览器为 file:// 页面发送的 Origin 值——单文件 dist 支持双击直接打开，
+# 不带上它则双击场景下访客计数必然被 CORS 拦掉（该接口只做计数，放开风险可忽略）。
 [vars]
-ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://lineart.madespark.cc"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://lineart.madespark.cc,null"

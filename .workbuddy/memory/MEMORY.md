@@ -35,23 +35,27 @@
   - smoothing=0 → 保留 rasterize→trace→pixelsToMm round-trip（与历史兼容）
 
 ## 设置持久化机制（generatorStore.ts）
-- 分模式 localStorage key：`lineart-baseplate-generator-settings-{filigree|seal|light-relief}`，另有 `-shared`。
+- 分模式 localStorage key：`lineart-baseplate-generator-settings-{filigree|seal|light-relief}`，另有 `-shared`（仅存 `customThreeMfProfile`）。
+- **各模式配置完全独立**（2026-09-03 定案）：printBedSettings 已从 shared 下沉到每个模式各自的快照；
+  切模式不会互相污染打印盘尺寸/间距。shared 仅保留 customThreeMfProfile（3MF 输出模板）。
 - 载入时 `normalizeXxxSettings` 用 `{ ...defaultXxx, ...parsed }` 合并，parsed 字段覆盖默认。
 - **含义**：改某个默认值时，老用户的历史快照里若已带旧默认值，重载仍会读到旧值——需配 schema 版本迁移。
 
 ## schema 版本迁移约定
-- 独立 key `lineart-baseplate-generator-settings-schema-version`，**当前 = 4**。
+- 独立 key `lineart-baseplate-generator-settings-schema-version`，**当前 = 6**。
 - `migrateStoredSettings()` 在模块顶层、loadXxxSettings 之前调用一次。
 - 策略：旧默认值若仍残留在快照里 → 视为"用户未改过"，**删除该字段**使其回落到新默认；其他值视为"用户已显式修改"，保留。
 - 迁移史：v1→v2 smoothing 旧默认 36→删字段回落到 10；v2→v3 `autoOptimize=true` 强制改 false；
-  v3→v4 删除已废弃的 `lightReliefSettings.bFaceReverseStack`。
+  v3→v4 删除已废弃的 `lightReliefSettings.bFaceReverseStack`；
+  v4→v5 light-relief mirror:false（旧默认）→删字段回落 true；
+  v5→v6 printBedSettings 从 shared 复制到三个模式 key 后从 shared 删除。
 - 测试：generatorStore.test.ts 三条迁移测试（36→10、20→保留、v4 删 bFaceReverseStack）。
 
 ## 关键默认值
 - `defaultLineartSettings.smoothing` = 10（2026-08-24 由 36 改）。
 - 三模式 lineart 默认：filigree 用 `defaultLineartSettings`；seal 用 `defaultSealLineartSettings`（mirror:true，
-  且 UploadPanel effect 强制开启不可关）；light-relief 用 `defaultLightReliefLineartSettings`（mirror:true，
-  仅默认值用户可关，2026-09-03 加）。改默认值必须配 schema 迁移（当前 v5）。
+  用户可关闭但会弹警告确认）；light-relief 用 `defaultLightReliefLineartSettings`（mirror:true，
+  同样可关+警告，2026-09-03 加）。改默认值必须配 schema 迁移（当前 v6）。
 - **自动调参已彻底删除**（2026-08-27）：`calculateAutoLineartParams` 与"自动识别优化"开关都删了，
   所有参数严格用 UI 上的值，不再按图片分辨率覆盖。
 
@@ -65,6 +69,18 @@
   `~/.workbuddy/binaries/node/workspace`，用系统 Chrome（executablePath），无需下载浏览器。
   坑：innerText 有 trae-inspector 的 "QAQ" 前缀，定位用类名容器 hasText；
   合成 PNG 会被线稿识别拒收，要用页面 canvas 画抗锯齿灰度图再导出上传。
+  数值输入框读取也受 QAQ 污染（textContent 同理），E2E 里用 locator + placeholder 精确定位。
+
+## 预览画布交互（2026-09-03）
+- **右键拖动直接平移**：PreviewCanvas pointerdown button 2（右键）无条件进入 pan 模式，
+  无需先切到「拖动」工具。拖动期间 cursor=grabbing，松开恢复。画笔/橡皮擦下同样生效。
+- **镜像关闭警告**（seal + light-relief）：不再强制 disabled；用户关 mirror 时弹确认对话框
+  说明成品会是原图镜像，确认后开关下方常驻橙色警示文案。
+
+## 访客计数器 Worker CORS（2026-09-03）
+- `buildCorsHeaders`：origin 在白名单内才回显该 origin，否则返回空（由 isAllowedOrigin 拦截返回 403）。
+- `ALLOWED_ORIGINS` 含 `null`（file:// 双击场景 requestOrigin=null）。
+- 部署域名需在 wrangler.toml 的 ALLOWED_ORIGINS 里补齐。
 
 ## 光映浮雕几何【2026-08-30 第 12 轮定案：唯一解 = 柱体坐在 A 面底板上】
 > ⚠️ 本节推翻了第 10/11 轮的「▼ 反向堆叠 + 倒扣打印」结论。**不要再加回 ▼ 或背景顶盖。**

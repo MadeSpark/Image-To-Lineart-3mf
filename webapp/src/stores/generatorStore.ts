@@ -23,7 +23,7 @@ const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板�
 
 // 设置快照 schema 版本：用于一次性迁移历史 localStorage 快照。
 const SCHEMA_VERSION_KEY = 'lineart-baseplate-generator-settings-schema-version'
-const SETTINGS_SCHEMA_VERSION = 5
+const SETTINGS_SCHEMA_VERSION = 6
 // 旧版线条平滑默认值。迁移时若快照仍为此值，视作"用户未修改过"，回落到新默认值。
 const LEGACY_SMOOTHING_DEFAULT = 36
 const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY] as const
@@ -54,8 +54,8 @@ export const defaultSealLineartSettings: LineartSettings = {
   mirror: true,
 }
 
-// 光映浮雕默认水平镜像输出（光刻胶/浮雕图文需镜像才能在打印面正确呈现）。
-// 与 seal 不同：这里只是默认值，用户仍可在 UI 上手动关闭（seal 是强制开启）。
+// 光映浮雕默认水平镜像输出（成品使用面与打印面相反，必须镜像才和原图一致）。
+// 与 seal 一样只是「默认值」：用户可以在 UI 上手动关闭，关闭前 UploadPanel 会弹窗说明后果。
 export const defaultLightReliefLineartSettings: LineartSettings = {
   ...defaultLineartSettings,
   mirror: true,
@@ -149,27 +149,31 @@ export const defaultLightReliefSettings: LightReliefSettings = {
   bFaceInvert: false,
 }
 
+// 三种模式的配置完全独立，各存一份完整快照（含打印盘尺寸/间距）。
+// 唯一跨模式共享的是 3MF 输出配置（打印机/耗材/工艺模板），见 SharedSettings。
 interface FiligreeModeSettings {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   extrudeSettings: ExtrudeSettings
   numberingSettings: NumberingSettings
+  printBedSettings: PrintBedSettings
 }
 
 interface SealModeSettings {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   sealSettings: SealSettings
+  printBedSettings: PrintBedSettings
 }
 
 interface LightReliefModeSettings {
   lineartSettings: LineartSettings
   baseplateSettings: BaseplateSettings
   lightReliefSettings: LightReliefSettings
+  printBedSettings: PrintBedSettings
 }
 
 interface SharedSettings {
-  printBedSettings: PrintBedSettings
   customThreeMfProfile: ThreeMfTemplateProfile | null
 }
 
@@ -244,6 +248,7 @@ function normalizeFiligreeSettings(parsed: Partial<FiligreeModeSettings>): Filig
     baseplateSettings: { ...defaultBaseplateSettings, ...parsed.baseplateSettings },
     extrudeSettings: { ...defaultExtrudeSettings, ...parsed.extrudeSettings },
     numberingSettings: { ...defaultNumberingSettings, ...parsed.numberingSettings },
+    printBedSettings: { ...defaultPrintBedSettings, ...parsed.printBedSettings },
   }
 }
 
@@ -252,6 +257,7 @@ function normalizeSealSettings(parsed: Partial<SealModeSettings>): SealModeSetti
     lineartSettings: { ...defaultSealLineartSettings, ...parsed.lineartSettings },
     baseplateSettings: { ...defaultSealBaseplateSettings, ...parsed.baseplateSettings },
     sealSettings: { ...defaultSealSettings, ...parsed.sealSettings },
+    printBedSettings: { ...defaultPrintBedSettings, ...parsed.printBedSettings },
   }
 }
 
@@ -292,12 +298,12 @@ function normalizeLightReliefSettings(parsed: Partial<LightReliefModeSettings>):
     lineartSettings: { ...defaultLightReliefLineartSettings, ...parsed.lineartSettings },
     baseplateSettings: { ...defaultLightReliefBaseplateSettings, ...parsed.baseplateSettings },
     lightReliefSettings: mergedSettings,
+    printBedSettings: { ...defaultPrintBedSettings, ...parsed.printBedSettings },
   }
 }
 
 function normalizeSharedSettings(parsed: Partial<SharedSettings>): SharedSettings {
   return {
-    printBedSettings: { ...defaultPrintBedSettings, ...parsed.printBedSettings },
     customThreeMfProfile: parsed.customThreeMfProfile ?? null,
   }
 }
@@ -410,6 +416,9 @@ function saveSharedSettings(settings: SharedSettings) {
 
 /**
  * 迁移历史快照：
+ * - schema v5 → v6：打印盘参数（宽/深/间距）从三模式共享下沉为各模式独立。
+ *   老快照的 shared.printBedSettings 是唯一的打印盘来源：先复制到三个模式快照
+ *   （模式自己已存过的不覆盖），再从 shared 里删掉，避免老用户的打印盘设置丢失。
  * - schema v3 → v4：移除 B 面「反向堆叠」开关。老快照里残留的 lightReliefSettings.bFaceReverseStack
  *   一律删除（该形态已被证明不可打印并移除，留着只是死键，且会污染导出时的字段合并）。
  * - schema v2 → v3：移除自动调参功能。老用户带 autoOptimize=true 的快照强制改为 false，
@@ -467,6 +476,40 @@ function migrateStoredSettings() {
     }
   }
 
+  if (version < 6) {
+    // 打印盘参数下沉到各模式：老的 shared 快照是唯一来源，复制给每个模式再删掉。
+    let sharedPrintBed: PrintBedSettings | null = null
+    try {
+      const sharedRaw = window.localStorage.getItem(SHARED_STORAGE_KEY)
+      if (sharedRaw) {
+        const shared = JSON.parse(sharedRaw) as { printBedSettings?: PrintBedSettings }
+        if (shared?.printBedSettings) {
+          sharedPrintBed = shared.printBedSettings
+          delete shared.printBedSettings
+          window.localStorage.setItem(SHARED_STORAGE_KEY, JSON.stringify(shared))
+        }
+      }
+    } catch {
+      // 忽略损坏的 shared 快照
+    }
+
+    if (sharedPrintBed) {
+      for (const key of MODE_STORAGE_KEYS) {
+        try {
+          const raw = window.localStorage.getItem(key)
+          const parsed = raw
+            ? JSON.parse(raw) as { printBedSettings?: PrintBedSettings }
+            : {}
+          if (parsed?.printBedSettings) continue
+          parsed.printBedSettings = sharedPrintBed
+          window.localStorage.setItem(key, JSON.stringify(parsed))
+        } catch {
+          // 忽略损坏的模式快照
+        }
+      }
+    }
+  }
+
   try {
     window.localStorage.setItem(SCHEMA_VERSION_KEY, String(SETTINGS_SCHEMA_VERSION))
   } catch {
@@ -481,22 +524,24 @@ function saveCurrentModeSettings(state: GeneratorState) {
       baseplateSettings: state.baseplateSettings,
       extrudeSettings: state.extrudeSettings,
       numberingSettings: state.numberingSettings,
+      printBedSettings: state.printBedSettings,
     })
   } else if (state.workMode === 'seal') {
     saveSealSettings({
       lineartSettings: state.lineartSettings,
       baseplateSettings: state.baseplateSettings,
       sealSettings: state.sealSettings,
+      printBedSettings: state.printBedSettings,
     })
   } else {
     saveLightReliefSettings({
       lineartSettings: state.lineartSettings,
       baseplateSettings: state.baseplateSettings,
       lightReliefSettings: state.lightReliefSettings,
+      printBedSettings: state.printBedSettings,
     })
   }
   saveSharedSettings({
-    printBedSettings: state.printBedSettings,
     customThreeMfProfile: state.customThreeMfProfile,
   })
 }
@@ -520,7 +565,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   numberingSettings: storedFiligree.numberingSettings,
   sealSettings: storedSeal.sealSettings,
   lightReliefSettings: storedLightRelief.lightReliefSettings,
-  printBedSettings: storedShared.printBedSettings,
+  printBedSettings: storedFiligree.printBedSettings,
   customThreeMfProfile: storedShared.customThreeMfProfile,
 
   setSourceImage: (sourceImage) => set({ sourceImage, importedLineart: null }),
@@ -541,6 +586,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         baseplateSettings: filigree.baseplateSettings,
         extrudeSettings: filigree.extrudeSettings,
         numberingSettings: filigree.numberingSettings,
+        printBedSettings: filigree.printBedSettings,
       })
     } else if (mode === 'seal') {
       const seal = loadSealSettings()
@@ -549,6 +595,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: seal.lineartSettings,
         baseplateSettings: seal.baseplateSettings,
         sealSettings: seal.sealSettings,
+        printBedSettings: seal.printBedSettings,
       })
     } else {
       const lightRelief = loadLightReliefSettings()
@@ -557,6 +604,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: lightRelief.lineartSettings,
         baseplateSettings: lightRelief.baseplateSettings,
         lightReliefSettings: lightRelief.lightReliefSettings,
+        printBedSettings: lightRelief.printBedSettings,
       })
     }
   },
@@ -583,11 +631,11 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   }),
 
   updatePrintBedSettings: (patch) => set((state) => {
+    // 打印盘尺寸属于「当前模式」的配置：印章用小盘、掐丝用大盘是常见搭配，
+    // 共享会让改一个模式牵连另外两个。只有 3MF 输出配置是真正跨模式共享的。
     const printBedSettings = { ...state.printBedSettings, ...patch }
-    saveSharedSettings({
-      printBedSettings,
-      customThreeMfProfile: state.customThreeMfProfile,
-    })
+    const next = { ...state, printBedSettings }
+    saveCurrentModeSettings(next)
     return { printBedSettings }
   }),
 
@@ -616,10 +664,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   }),
 
   setCustomThreeMfProfile: (customThreeMfProfile) => {
-    saveSharedSettings({
-      printBedSettings: get().printBedSettings,
-      customThreeMfProfile,
-    })
+    saveSharedSettings({ customThreeMfProfile })
     set({ customThreeMfProfile })
   },
 
@@ -635,6 +680,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         baseplateSettings: normalized.baseplateSettings,
         extrudeSettings: normalized.extrudeSettings,
         numberingSettings: normalized.numberingSettings,
+        printBedSettings: normalized.printBedSettings,
       })
       set((state) => ({
         workMode: 'filigree',
@@ -654,6 +700,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: normalized.lineartSettings,
         baseplateSettings: normalized.baseplateSettings,
         sealSettings: normalized.sealSettings,
+        printBedSettings: normalized.printBedSettings,
       })
       set((state) => ({
         workMode: 'seal',
@@ -671,6 +718,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: normalized.lineartSettings,
         baseplateSettings: normalized.baseplateSettings,
         lightReliefSettings: normalized.lightReliefSettings,
+        printBedSettings: normalized.printBedSettings,
       })
       set((state) => ({
         workMode: 'light-relief',
@@ -684,7 +732,6 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       }))
     }
     saveSharedSettings({
-      printBedSettings: normalized.printBedSettings,
       customThreeMfProfile: normalized.customThreeMfProfile,
     })
   },
@@ -704,6 +751,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         baseplateSettings: defaultBaseplateSettings,
         extrudeSettings: defaultExtrudeSettings,
         numberingSettings: defaultNumberingSettings,
+        printBedSettings,
       })
       set({
         workMode: 'filigree',
@@ -720,6 +768,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: defaultSealLineartSettings,
         baseplateSettings: defaultSealBaseplateSettings,
         sealSettings: defaultSealSettings,
+        printBedSettings,
       })
       set({
         workMode: 'seal',
@@ -735,6 +784,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: defaultLightReliefLineartSettings,
         baseplateSettings: defaultLightReliefBaseplateSettings,
         lightReliefSettings: defaultLightReliefSettings,
+        printBedSettings,
       })
       set({
         workMode: 'light-relief',
@@ -747,7 +797,6 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       })
     }
     saveSharedSettings({
-      printBedSettings,
       customThreeMfProfile: null,
     })
   },

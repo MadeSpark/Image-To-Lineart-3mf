@@ -80,6 +80,24 @@ const LIGHT_RELIEF_PRESETS: BaseplatePreset[] = [
       faceBHeightMm: 1.7,
     },
   },
+  {
+    name: '2:3',
+    baseplate: {
+      template: 'rectangle',
+      imagePlacement: 'crop',
+      widthMm: 100,
+      heightMm: 150,
+      marginMm: 2,
+      rectangleSizeMode: 'manual',
+    },
+    lightRelief: {
+      totalHeightMm: 2,
+      faceAZMm: 0,
+      faceAHeightMm: 0.2,
+      faceBZMm: 0.3,
+      faceBHeightMm: 1.7,
+    },
+  },
 ]
 
 export default function Home() {

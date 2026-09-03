@@ -86,6 +86,9 @@ export function PreviewCanvas({
     strokePoints: [],
   })
   const [isPicking, setIsPicking] = useState(false)
+  // 右键拖动平移期间置位：用来切成 grabbing 光标并藏起画笔光标，
+  // 否则画笔/橡皮擦工具下右键平移时仍会跟着画一个笔刷圈。
+  const [isRightPanning, setIsRightPanning] = useState(false)
   const [draftPickedColor, setDraftPickedColor] = useState<string | null>(null)
   const [lineartTool, setLineartTool] = useState<LineartTool>('pan')
   const [brushSizeMm, setBrushSizeMm] = useState(1.2)
@@ -157,6 +160,7 @@ export function PreviewCanvas({
     }
     setLiveStrokePoints([])
     setBrushCursorPoint(null)
+    setIsRightPanning(false)
   }, [viewResetKey])
 
   const canPickColor = Boolean(sourceImage && previewMode === '原图' && !processing)
@@ -177,7 +181,7 @@ export function PreviewCanvas({
   const effectiveHasPreviewContent = isThreeDimensionalPreview ? Boolean(artwork) : hasPreviewContent
   const canEditLineart = previewMode === '线稿' && Boolean(vectorScene) && !processing
   const brushCursorOverlay = useMemo(() => {
-    if (!canEditLineart || !brushCursorPoint || lineartTool === 'pan' || !vectorViewBox) {
+    if (!canEditLineart || !brushCursorPoint || lineartTool === 'pan' || isRightPanning || !vectorViewBox) {
       return null
     }
 
@@ -207,7 +211,7 @@ export function PreviewCanvas({
       top: svgRect.top - viewportRect.top + offsetY + (brushCursorPoint.y - vectorViewBox.minY) * scale,
       diameter: Math.max(brushSizeMm * 2 * scale, 10),
     }
-  }, [brushCursorPoint, brushSizeMm, canEditLineart, lineartTool, vectorViewBox])
+  }, [brushCursorPoint, brushSizeMm, canEditLineart, isRightPanning, lineartTool, vectorViewBox])
 
   const zoomViewport = (clientX: number, clientY: number, deltaY: number) => {
     const viewport = viewportRef.current
@@ -333,7 +337,12 @@ export function PreviewCanvas({
     }
 
     let mode: 'pan' | 'pick' | 'brush' | 'eraser' | null = null
-    if (event.button === 0 && canPickColor && event.shiftKey) {
+    if (event.button === 2) {
+      // 右键一律当作拖动画布：画笔/橡皮擦工具下不必先切回「拖动」才能平移。
+      // 右键菜单已由 handleViewportContextMenu 的 preventDefault 拦掉，不会打断拖动。
+      mode = 'pan'
+      setIsRightPanning(true)
+    } else if (event.button === 0 && canPickColor && event.shiftKey) {
       mode = 'pick'
       setIsPicking(true)
       setDraftPickedColor(sampleColor(event.clientX, event.clientY))
@@ -402,6 +411,7 @@ export function PreviewCanvas({
   const handleViewportPointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current
     const interaction = interactionRef.current
+    setIsRightPanning(false)
     if (interaction.pointerId !== event.pointerId || !interaction.mode) {
       return
     }
@@ -447,19 +457,32 @@ export function PreviewCanvas({
     }
   }
 
+  // 画布内联提示必须极短（塞进 pill 徽章）；详细操作说明通过 title tooltip 展示。
+  const shortInteractionHint = isThreeDimensionalPreview
+    ? '拖动旋转 · 滚轮缩放'
+    : canPickColor
+      ? '拖动平移 · 滚轮缩放 · Shift+取色'
+      : canEditLineart
+        ? lineartTool === 'pan'
+          ? '右键/左键平移 · 滚轮缩放'
+          : '编辑线稿中 · 右键可平移'
+        : '拖动平移 · 滚轮缩放'
+
   const interactionHint = isThreeDimensionalPreview
     ? '3D预览支持拖动旋转与滚轮缩放'
     : canPickColor
     ? '左键拖动画布，滚轮缩放，Shift+拖动取色'
     : canEditLineart
       ? lineartTool === 'pan'
-        ? '滚轮缩放；线稿模式可切换拖动、画笔和橡皮擦'
-        : '当前正在直接修改线稿矢量轮廓'
+        ? '滚轮缩放；左键或右键拖动都能平移，也可切到画笔/橡皮擦直接改线稿'
+        : '正在直接修改线稿矢量轮廓；右键拖动可随时平移画布'
       : '左键拖动画布，滚轮缩放'
   const contentCursor = isPicking
     ? 'crosshair'
     : isThreeDimensionalPreview
       ? 'default'
+    : isRightPanning
+      ? 'grabbing'
     : canEditLineart && lineartTool === 'brush'
       ? 'none'
       : canEditLineart && lineartTool === 'eraser'
@@ -648,15 +671,12 @@ export function PreviewCanvas({
             data-canvas-control="true"
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <div className="inline-flex items-center gap-2 rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
-              <Pipette className="h-3.5 w-3.5" />
-              {previewMode === '原图'
-                ? interactionHint
-                : canEditLineart
-                  ? interactionHint
-                  : isThreeDimensionalPreview
-                    ? interactionHint
-                    : '切到原图后可 Shift+拖动取色'}
+            <div
+              className="inline-flex items-center gap-2 rounded-full bg-[#f8fafc] px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm"
+              title={interactionHint}
+            >
+              <Pipette className="h-3.5 w-3.5 shrink-0" />
+              {shortInteractionHint}
             </div>
             <div className="inline-flex items-center gap-2 rounded-full bg-[#f8fafc] px-2 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm">
               <span

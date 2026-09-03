@@ -40,19 +40,28 @@ export function UploadPanel({
   onClearEntries,
 }: UploadPanelProps) {
   const isSealMode = workMode === 'seal'
+  // 印章/光映浮雕的成品使用面与打印面相反，必须镜像输出才和原图一致。
+  // 这两个模式默认开启镜像，但允许用户手动关闭——关闭前弹窗说明后果，
+  // 因为确实存在「我就是想要镜像效果」的合理需求，不能一禁了之。
+  const isMirrorRequiredMode = workMode === 'seal' || workMode === 'light-relief'
+  const mirrorModeLabel = workMode === 'seal' ? '印章模式' : '光映浮雕模式'
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const dxfInputRef = useRef<HTMLInputElement | null>(null)
   const [draftTargetColor, setDraftTargetColor] = useState(settings.targetColor)
+  const [mirrorWarningOpen, setMirrorWarningOpen] = useState(false)
 
   useEffect(() => {
     setDraftTargetColor(settings.targetColor)
   }, [settings.targetColor])
 
-  useEffect(() => {
-    if (isSealMode && !settings.mirror) {
-      onUpdateSettings({ mirror: true })
+  const handleMirrorToggle = (checked: boolean) => {
+    if (checked || !isMirrorRequiredMode) {
+      onUpdateSettings({ mirror: checked })
+      return
     }
-  }, [isSealMode, settings.mirror, onUpdateSettings])
+    // 先弹确认，用户取消时受控 checkbox 会自动回弹到勾选状态。
+    setMirrorWarningOpen(true)
+  }
 
   const commitTargetColor = () => {
     if (draftTargetColor !== settings.targetColor) {
@@ -511,15 +520,19 @@ export function UploadPanel({
             />
           </label>
           <label className="inline-flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-            <span>水平镜像{isSealMode && <span className="ml-1 text-[11px] text-slate-400">（印章模式自动开启）</span>}</span>
+            <span>水平镜像{isMirrorRequiredMode && <span className="ml-1 text-[11px] text-slate-400">（{mirrorModeLabel}需要镜像）</span>}</span>
             <input
               type="checkbox"
               checked={settings.mirror}
-              disabled={isSealMode}
-              onChange={(event) => onUpdateSettings({ mirror: event.target.checked })}
-              className="h-4 w-4 accent-[#0088ff] disabled:cursor-not-allowed"
+              onChange={(event) => handleMirrorToggle(event.target.checked)}
+              className="h-4 w-4 accent-[#0088ff]"
             />
           </label>
+          {isMirrorRequiredMode && !settings.mirror && (
+            <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] leading-relaxed text-amber-700">
+              已关闭水平镜像：{mirrorModeLabel}成品的使用面与打印面相反，导出的成品会是原图的镜像（文字与图案左右翻转）。若盖出来或透光看是反的，把水平镜像重新勾选即可。
+            </p>
+          )}
         </div>
       </div>
 
@@ -549,6 +562,46 @@ export function UploadPanel({
           </div>
         </div>
       </div>
+
+      {mirrorWarningOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-md overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_32px_120px_rgba(15,23,42,0.28)]">
+            <div className="border-b border-slate-200 px-6 py-5">
+              <div className="text-base font-semibold text-slate-950">确认关闭水平镜像？</div>
+            </div>
+            <div className="space-y-3 px-6 py-5 text-sm leading-relaxed text-slate-600">
+              <p>
+                {mirrorModeLabel}的成品使用面与打印面相反，只有镜像输出才能得到和原图一致的效果。
+              </p>
+              <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-700">
+                关闭后导出的成品将是原图的镜像，文字与图案会左右翻转。
+              </p>
+              <p className="text-[12px] text-slate-400">
+                仅当你确实想要镜像效果（例如刻意做反字）时才需要关闭。
+              </p>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setMirrorWarningOpen(false)}
+                className="rounded-full bg-[#0088ff] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#0077e6]"
+              >
+                保持镜像（推荐）
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMirrorWarningOpen(false)
+                  onUpdateSettings({ mirror: false })
+                }}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+              >
+                仍要关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingCroppedUrls.length > 0 && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm">

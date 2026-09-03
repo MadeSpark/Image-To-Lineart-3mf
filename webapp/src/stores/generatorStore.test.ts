@@ -51,12 +51,12 @@ describe('useGeneratorStore persistence', () => {
       extrudeSettings: {
         baseThicknessMm: 0.3,
       },
-    }))
-    localStorage.setItem('lineart-baseplate-generator-settings-shared', JSON.stringify({
       printBedSettings: {
         widthMm: 300,
         spacingMm: 12,
       },
+    }))
+    localStorage.setItem('lineart-baseplate-generator-settings-shared', JSON.stringify({
       customThreeMfProfile: {
         sourceName: 'custom.3mf',
         applicationName: 'BambuStudio-02.07.01.62',
@@ -97,6 +97,86 @@ describe('useGeneratorStore persistence', () => {
     expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(256)
     expect(useGeneratorStore.getState().printBedSettings.spacingMm).toBe(12)
     expect(useGeneratorStore.getState().customThreeMfProfile?.sourceName).toBe('custom.3mf')
+  })
+
+  it('keeps print bed settings per work mode instead of sharing them', async () => {
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    // 掐丝模式把打印盘改成 300x300，间距 12
+    useGeneratorStore.getState().updatePrintBedSettings({
+      widthMm: 300,
+      depthMm: 300,
+      spacingMm: 12,
+    })
+    // 切到印章模式：打印盘回到该模式自己的默认值，不被掐丝模式污染
+    useGeneratorStore.getState().setWorkMode('seal')
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
+    expect(useGeneratorStore.getState().printBedSettings.spacingMm).toBe(8)
+
+    // 印章模式改成小盘
+    useGeneratorStore.getState().updatePrintBedSettings({ widthMm: 180, depthMm: 180 })
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(180)
+
+    // 切到光映浮雕：同样是独立默认值
+    useGeneratorStore.getState().setWorkMode('light-relief')
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(256)
+
+    // 切回掐丝：拿到的是掐丝自己那一份 300x300/12
+    useGeneratorStore.getState().setWorkMode('filigree')
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(300)
+    expect(useGeneratorStore.getState().printBedSettings.depthMm).toBe(300)
+    expect(useGeneratorStore.getState().printBedSettings.spacingMm).toBe(12)
+
+    // 3MF 输出配置仍然跨模式共享
+    useGeneratorStore.getState().setCustomThreeMfProfile({
+      sourceName: 'custom.3mf',
+      applicationName: 'BambuStudio-02.07.01.62',
+      projectSettings: {},
+      sliceInfoConfig: '<config />',
+      filamentSequenceJson: null,
+      printBedWidthMm: 300,
+      printBedDepthMm: 256,
+      printerModel: 'Bambu Lab A1',
+      printerVariant: '0.4',
+      printerSettingsId: 'Bambu Lab A1 0.4 nozzle',
+      printSettingsId: '0.20mm Standard @BBL A1',
+      bedType: 'Textured PEI Plate',
+      compatiblePrinters: ['Bambu Lab A1 0.4 nozzle'],
+      filamentSlotCount: 2,
+      layerHeightMm: null,
+      lineWidthMm: null,
+    })
+    useGeneratorStore.getState().setWorkMode('seal')
+    expect(useGeneratorStore.getState().customThreeMfProfile?.sourceName).toBe('custom.3mf')
+    // 共享配置里不再夹带打印盘参数
+    const savedShared = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-shared') ?? '{}')
+    expect('printBedSettings' in savedShared).toBe(false)
+  })
+
+  it('migrates legacy shared print bed settings into every mode snapshot', async () => {
+    // schema v6：打印盘参数从 shared 下沉到各模式。
+    // 老快照里打印盘只在 shared 里有一份，迁移后三个模式都要拿到它，且 shared 里删掉。
+    localStorage.setItem('lineart-baseplate-generator-settings-shared', JSON.stringify({
+      printBedSettings: { widthMm: 220, depthMm: 220, spacingMm: 10 },
+      customThreeMfProfile: null,
+    }))
+    localStorage.setItem('lineart-baseplate-generator-settings-seal', JSON.stringify({
+      sealSettings: { carvingMode: 'relief' },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(220)
+
+    useGeneratorStore.getState().setWorkMode('seal')
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(220)
+    expect(useGeneratorStore.getState().printBedSettings.spacingMm).toBe(10)
+
+    useGeneratorStore.getState().setWorkMode('light-relief')
+    expect(useGeneratorStore.getState().printBedSettings.widthMm).toBe(220)
+
+    const savedShared = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-shared') ?? '{}')
+    expect('printBedSettings' in savedShared).toBe(false)
   })
 
   it('resets settings back to defaults and clears custom 3mf profile', async () => {
@@ -174,8 +254,10 @@ describe('useGeneratorStore persistence', () => {
     const saved = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-filigree') ?? '{}')
     expect(saved.lineartSettings.detail).toBe(64)
     expect(saved.baseplateSettings.widthMm).toBe(250)
+    // 打印盘已经属于模式快照，不再写进 shared
+    expect(saved.printBedSettings.depthMm).toBe(180)
     const savedShared = JSON.parse(localStorage.getItem('lineart-baseplate-generator-settings-shared') ?? '{}')
-    expect(savedShared.printBedSettings.depthMm).toBe(180)
+    expect('printBedSettings' in savedShared).toBe(false)
   })
 
   it('migrates legacy smoothing default (36) to the new default on load', async () => {
