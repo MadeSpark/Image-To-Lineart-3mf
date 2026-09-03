@@ -396,5 +396,7 @@ describe('real-image line width consistency', () => {
 
     console.log('[ok] dumped masks to', outDir)
     expect(result.lineLoops.length).toBeGreaterThan(0)
-  }, 300_000)
+    // ⚠️ 本机实测全管线 6~8 分钟，300s 默认超时会假失败（2026-09-03：
+    // "Test timed out in 300000ms" 曾被误读为管线回归）。给足 15 分钟。
+  }, 900_000)
 })
