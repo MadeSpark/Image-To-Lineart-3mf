@@ -9,7 +9,7 @@ const versionFile = JSON.parse(
 ) as { version?: string }
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   base: './',
   // 让 vite 把 .3mf 识别为二进制资产（配合 `?inline` 后缀转 base64 data URL）；
   // 缺了它 vitest/构建会把 default-print-profile.3mf?inline 当 JS 源码解析报错
@@ -36,11 +36,11 @@ export default defineConfig({
   plugins: [
     react({
       babel: {
-        plugins: [
-          'react-dev-locator',
-        ],
+        // react-dev-locator 给每个 JSX 元素注入源码位置属性（trae-inspector-*），
+        // 仅开发服务器需要（编辑器跳转联动）；生产包里纯属体积和隐私负担
+        plugins: command === 'serve' ? ['react-dev-locator'] : [],
       },
     }),
     tsconfigPaths(),
   ],
-})
+}))
