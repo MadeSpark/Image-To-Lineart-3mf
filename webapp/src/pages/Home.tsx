@@ -998,7 +998,12 @@ useEffect(() => {
               artwork={effectiveArtwork}
               previewMode={previewMode}
               onPreviewModeChange={setPreviewMode}
-              processing={processing || exporting}
+              // 注意：不要把 exporting 并进来。导出进度已由独立 ProgressDialog 展示，
+              // 若在导出期间用 processing 遮罩卸载预览内容，3D 模式下 ThreeDModelViewer
+              // 会在导出结束后整体重挂载：大模型要静默重新拉取/解码整个 glTF（缓存命中
+              // 时不显示任何加载提示），内存吃紧时 WebGL 上下文重建失败就表现为
+              // 「导出完预览框空白」。保持预览挂载不动是最稳的。
+              processing={processing}
               error={error}
               targetColor={lineartSettings.targetColor}
               baseplateSettings={baseplateSettings}

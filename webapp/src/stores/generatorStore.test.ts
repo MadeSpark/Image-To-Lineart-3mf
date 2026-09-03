@@ -216,4 +216,30 @@ describe('useGeneratorStore persistence', () => {
     )
     expect('bFaceReverseStack' in saved.lightReliefSettings).toBe(false)
   })
+
+  it('migrates legacy light-relief mirror default (false) to the new mirrored default', async () => {
+    // schema v5：光映浮雕线稿默认水平镜像改为开启。
+    // 旧快照 mirror:false 是旧默认值，视作"用户未修改"，删除后回落到新默认 true；
+    // 其余显式修改过的字段（detail:80）必须保留。
+    localStorage.setItem('lineart-baseplate-generator-settings-light-relief', JSON.stringify({
+      lineartSettings: { mirror: false, detail: 80 },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+    useGeneratorStore.getState().setWorkMode('light-relief')
+
+    expect(useGeneratorStore.getState().lineartSettings.mirror).toBe(true)
+    expect(useGeneratorStore.getState().lineartSettings.detail).toBe(80)
+  })
+
+  it('keeps an explicitly enabled light-relief mirror through migration', async () => {
+    localStorage.setItem('lineart-baseplate-generator-settings-light-relief', JSON.stringify({
+      lineartSettings: { mirror: true },
+    }))
+
+    const { useGeneratorStore } = await import('@/stores/generatorStore')
+    useGeneratorStore.getState().setWorkMode('light-relief')
+
+    expect(useGeneratorStore.getState().lineartSettings.mirror).toBe(true)
+  })
 })

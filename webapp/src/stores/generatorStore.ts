@@ -23,7 +23,7 @@ const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板�
 
 // 设置快照 schema 版本：用于一次性迁移历史 localStorage 快照。
 const SCHEMA_VERSION_KEY = 'lineart-baseplate-generator-settings-schema-version'
-const SETTINGS_SCHEMA_VERSION = 4
+const SETTINGS_SCHEMA_VERSION = 5
 // 旧版线条平滑默认值。迁移时若快照仍为此值，视作"用户未修改过"，回落到新默认值。
 const LEGACY_SMOOTHING_DEFAULT = 36
 const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY] as const
@@ -50,6 +50,13 @@ export const defaultLineartSettings: LineartSettings = {
 }
 
 export const defaultSealLineartSettings: LineartSettings = {
+  ...defaultLineartSettings,
+  mirror: true,
+}
+
+// 光映浮雕默认水平镜像输出（光刻胶/浮雕图文需镜像才能在打印面正确呈现）。
+// 与 seal 不同：这里只是默认值，用户仍可在 UI 上手动关闭（seal 是强制开启）。
+export const defaultLightReliefLineartSettings: LineartSettings = {
   ...defaultLineartSettings,
   mirror: true,
 }
@@ -282,7 +289,7 @@ function normalizeLightReliefSettings(parsed: Partial<LightReliefModeSettings>):
     ...parsed.lightReliefSettings,
   })
   return {
-    lineartSettings: { ...defaultLineartSettings, ...parsed.lineartSettings },
+    lineartSettings: { ...defaultLightReliefLineartSettings, ...parsed.lineartSettings },
     baseplateSettings: { ...defaultLightReliefBaseplateSettings, ...parsed.baseplateSettings },
     lightReliefSettings: mergedSettings,
   }
@@ -410,6 +417,9 @@ function saveSharedSettings(settings: SharedSettings) {
  * - schema v1 → v2：线条平滑曾默认 36，现改为 10。
  *   若某模式快照的 smoothing 仍为旧默认 36，视作"用户未修改过"，移除该字段
  *   使其回落到新默认值 10；若 smoothing 为其他值，视作"用户已显式修改"，保留不动。
+ * - schema v4 → v5：光映浮雕线稿默认水平镜像改为开启（mirror: true）。
+ *   仅处理光映浮雕模式快照：mirror 仍为旧默认 false 的删除该字段，回落到新默认 true；
+ *   mirror 为 true（用户已显式开启）保留不动。
  */
 function migrateStoredSettings() {
   if (typeof window === 'undefined') return
@@ -426,7 +436,7 @@ function migrateStoredSettings() {
       const raw = window.localStorage.getItem(key)
       if (!raw) continue
       const parsed = JSON.parse(raw) as {
-        lineartSettings?: { smoothing?: number; autoOptimize?: boolean }
+        lineartSettings?: { smoothing?: number; autoOptimize?: boolean; mirror?: boolean }
         lightReliefSettings?: { bFaceReverseStack?: boolean }
       }
       const ls = parsed?.lineartSettings
@@ -442,6 +452,11 @@ function migrateStoredSettings() {
       if (version < 4 && parsed.lightReliefSettings
         && 'bFaceReverseStack' in parsed.lightReliefSettings) {
         delete parsed.lightReliefSettings.bFaceReverseStack
+        mutated = true
+      }
+      if (version < 5 && key === LIGHT_RELIEF_STORAGE_KEY && ls && ls.mirror === false) {
+        // 旧默认 mirror:false 视作"用户未修改"，删除后回落到新默认 true
+        delete ls.mirror
         mutated = true
       }
       if (mutated) {
@@ -717,14 +732,14 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       })
     } else {
       saveLightReliefSettings({
-        lineartSettings: defaultLineartSettings,
+        lineartSettings: defaultLightReliefLineartSettings,
         baseplateSettings: defaultLightReliefBaseplateSettings,
         lightReliefSettings: defaultLightReliefSettings,
       })
       set({
         workMode: 'light-relief',
         previewMode: DEFAULT_PREVIEW_MODE,
-        lineartSettings: defaultLineartSettings,
+        lineartSettings: defaultLightReliefLineartSettings,
         baseplateSettings: defaultLightReliefBaseplateSettings,
         lightReliefSettings: defaultLightReliefSettings,
         printBedSettings,

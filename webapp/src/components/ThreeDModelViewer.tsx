@@ -128,6 +128,10 @@ export function ThreeDModelViewer({
   const [modelUrl, setModelUrl] = useState<string | null>(null)
   const [isBuilding, setIsBuilding] = useState(false)
   const [buildError, setBuildError] = useState<string | null>(null)
+  // model-viewer 重新挂载/换源后到 glTF 真正渲染完成之间有一段静默期（大模型可达数秒），
+  // 期间画面是空的——必须显示加载提示，否则用户看到的就是「预览框空白」。
+  const [viewerLoading, setViewerLoading] = useState(false)
+  const viewerRef = useRef<HTMLElement | null>(null)
   const isSealMode = workMode === 'seal' && sealSettings
   const isLightReliefMode = workMode === 'light-relief' && lightReliefSettings
   const modelHeight = isSealMode
@@ -227,10 +231,43 @@ export function ThreeDModelViewer({
     }
   }, [artwork, baseplateSettings, extrudeSettings, sealSettings, lightReliefSettings, workMode, lineartSettings])
 
+  // 监听 model-viewer 的 load / error：加载中显示提示，加载失败给出可读错误。
+  // 用原生 addEventListener 而非 React 合成事件（自定义元素的事件合成不可靠）。
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !modelUrl) {
+      setViewerLoading(false)
+      return
+    }
+    setViewerLoading(true)
+    const handleLoad = () => setViewerLoading(false)
+    const handleError = () => {
+      setViewerLoading(false)
+      setBuildError('3D 模型加载失败，请切换一次预览模式重试')
+    }
+    const handleContextLost = (event: Event) => {
+      // WebGL 上下文丢失（常见于导出大模型后的内存压力）：阻止默认行为让 model-viewer 自行恢复
+      event.preventDefault()
+      setViewerLoading(true)
+    }
+    const handleContextRestored = () => setViewerLoading(false)
+    viewer.addEventListener('load', handleLoad)
+    viewer.addEventListener('error', handleError)
+    viewer.addEventListener('webglcontextlost', handleContextLost)
+    viewer.addEventListener('webglcontextrestored', handleContextRestored)
+    return () => {
+      viewer.removeEventListener('load', handleLoad)
+      viewer.removeEventListener('error', handleError)
+      viewer.removeEventListener('webglcontextlost', handleContextLost)
+      viewer.removeEventListener('webglcontextrestored', handleContextRestored)
+    }
+  }, [modelUrl])
+
   return (
     <div className="relative h-full w-full">
       {modelUrl ? (
         <model-viewer
+          ref={(node) => { viewerRef.current = node }}
           src={modelUrl}
           alt="线稿底板 3D 预览"
           camera-controls
@@ -253,6 +290,15 @@ export function ThreeDModelViewer({
           <div className="flex items-center gap-2 text-sm text-slate-600">
             <LoaderCircle className="h-4 w-4 animate-spin" />
             正在构建 3D 预览…
+          </div>
+        </div>
+      )}
+
+      {viewerLoading && !isBuilding && !buildError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+            正在加载 3D 模型…
           </div>
         </div>
       )}
