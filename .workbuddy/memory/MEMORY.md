@@ -49,9 +49,22 @@
 
 ## 关键默认值
 - `defaultLineartSettings.smoothing` = 10（2026-08-24 由 36 改）。
-- 三模式 lineart 默认都源自 `defaultLineartSettings`（seal 仅多 mirror:true）。
+- 三模式 lineart 默认：filigree 用 `defaultLineartSettings`；seal 用 `defaultSealLineartSettings`（mirror:true，
+  且 UploadPanel effect 强制开启不可关）；light-relief 用 `defaultLightReliefLineartSettings`（mirror:true，
+  仅默认值用户可关，2026-09-03 加）。改默认值必须配 schema 迁移（当前 v5）。
 - **自动调参已彻底删除**（2026-08-27）：`calculateAutoLineartParams` 与"自动识别优化"开关都删了，
   所有参数严格用 UI 上的值，不再按图片分辨率覆盖。
+
+## 预览与导出规则（2026-09-03 定案）
+- **PreviewCanvas 的 processing 绝不能并入 exporting**：导出期间卸载预览内容会让
+  ThreeDModelViewer 重挂载，大模型静默重新拉取 glTF + WebGL 上下文重建，失败即"导出后预览空白"。
+  导出进度由独立 ProgressDialog 展示，预览保持挂载。
+- ThreeDModelViewer 已有 viewerLoading（load 事件）+ error + webglcontextlost 兜底，
+  事件用原生 addEventListener（React 合成事件对 custom element 不可靠）。
+- 浏览器 E2E 复现工具：`.debug/headless-test/repro-export-blank.cjs`，playwright-core 装在
+  `~/.workbuddy/binaries/node/workspace`，用系统 Chrome（executablePath），无需下载浏览器。
+  坑：innerText 有 trae-inspector 的 "QAQ" 前缀，定位用类名容器 hasText；
+  合成 PNG 会被线稿识别拒收，要用页面 canvas 画抗锯齿灰度图再导出上传。
 
 ## 光映浮雕几何【2026-08-30 第 12 轮定案：唯一解 = 柱体坐在 A 面底板上】
 > ⚠️ 本节推翻了第 10/11 轮的「▼ 反向堆叠 + 倒扣打印」结论。**不要再加回 ▼ 或背景顶盖。**
