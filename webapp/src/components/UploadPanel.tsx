@@ -40,6 +40,7 @@ export function UploadPanel({
   onClearEntries,
 }: UploadPanelProps) {
   const isSealMode = workMode === 'seal'
+  const isStringArtMode = workMode === 'string-art'
   // 印章/光映浮雕的成品使用面与打印面相反，必须镜像输出才和原图一致。
   // 这两个模式默认开启镜像，但允许用户手动关闭——关闭前弹窗说明后果，
   // 因为确实存在「我就是想要镜像效果」的合理需求，不能一禁了之。
@@ -157,8 +158,8 @@ export function UploadPanel({
     <section className="space-y-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_18px_60px_rgba(15,23,42,0.05)]">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-slate-950">素材与线稿</h2>
-          <p className="mt-1 text-xs text-slate-500">支持批量导入图片，GIF 会先拆帧再挑选需要处理的帧。</p>
+          <h2 className="text-sm font-semibold text-slate-950">{isStringArtMode ? '弦丝画图片' : '素材与线稿'}</h2>
+          <p className="mt-1 text-xs text-slate-500">{isStringArtMode ? '导入明暗清晰的人像或物体照片，生成连续绕线。' : '支持批量导入图片，GIF 会先拆帧再挑选需要处理的帧。'}</p>
         </div>
         <div className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">
           {processing ? '处理中' : `${entries.length} 项`}
@@ -176,13 +177,13 @@ export function UploadPanel({
               <ImagePlus className="h-5 w-5" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-slate-950">批量导入 PNG / JPG / GIF</div>
-              <div className="mt-1 text-xs text-slate-500">可一次选多张图片，GIF 会自动拆出所有帧供你勾选后导入。</div>
+              <div className="text-sm font-semibold text-slate-950">{isStringArtMode ? '导入弦丝画图片' : '批量导入 PNG / JPG / GIF'}</div>
+              <div className="mt-1 text-xs text-slate-500">{isStringArtMode ? '可一次选多张图片；每张将生成独立的连续圆周绕线。' : '可一次选多张图片，GIF 会自动拆出所有帧供你勾选后导入。'}</div>
             </div>
           </div>
         </button>
 
-        <button
+        {!isStringArtMode && <button
           type="button"
           onClick={() => dxfInputRef.current?.click()}
           className="group block w-full rounded-[22px] border border-dashed border-slate-300 bg-white p-5 text-left transition hover:border-slate-400 hover:shadow-[0_18px_40px_rgba(148,163,184,0.18)]"
@@ -196,7 +197,7 @@ export function UploadPanel({
               <div className="mt-1 text-xs text-slate-500">支持闭合 polyline 轮廓，可与批量图片一起放进素材列表中逐张处理。</div>
             </div>
           </div>
-        </button>
+        </button>}
       </div>
 
       <input
@@ -216,7 +217,7 @@ export function UploadPanel({
           event.target.value = ''
         }}
       />
-      <input
+      {!isStringArtMode && <input
         ref={dxfInputRef}
         type="file"
         accept=".dxf,application/dxf"
@@ -228,7 +229,7 @@ export function UploadPanel({
           }
           event.target.value = ''
         }}
-      />
+      />}
 
       <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-4">
         <div className="flex items-center justify-between">

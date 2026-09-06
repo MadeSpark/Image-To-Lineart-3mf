@@ -10,10 +10,12 @@ import { PalettePanel } from '@/components/PalettePanel'
 import { PreviewCanvas } from '@/components/PreviewCanvas'
 import { PrintBedPanel } from '@/components/PrintBedPanel'
 import { SealPanel } from '@/components/SealPanel'
+import { StringArtPanel } from '@/components/StringArtPanel'
 import { ThicknessPanel } from '@/components/ThicknessPanel'
 import { UploadPanel } from '@/components/UploadPanel'
 import { WorkbenchHeader } from '@/components/WorkbenchHeader'
 import { useArtworkProcessor } from '@/hooks/useArtworkProcessor'
+import { processStringArtArtwork } from '@/utils/stringArt'
 import {
   buildPersistedSettingsSnapshot,
   useGeneratorStore,
@@ -30,6 +32,7 @@ import {
   buildSeal3mfPackage,
   rebuildArtworkWithLineLoops,
   buildLoopDxf,
+  buildStringArtDxfDocument,
   decodeGifFrames,
   fileToImportedLineart,
   fileToSourceImage,
@@ -113,6 +116,7 @@ export default function Home() {
     numberingSettings,
     sealSettings,
     lightReliefSettings,
+    stringArtSettings,
     workMode,
     customThreeMfProfile,
     setSourceImage,
@@ -126,6 +130,7 @@ export default function Home() {
     updateNumberingSettings,
     updateSealSettings,
     updateLightReliefSettings,
+    updateStringArtSettings,
     setCustomThreeMfProfile,
     setWorkMode,
     applyImportedSettings,
@@ -195,6 +200,10 @@ export default function Home() {
     [activeEntryId, entries],
   )
   const effectiveThreeMfProfile = customThreeMfProfile ?? defaultThreeMfProfile
+  const stringArtPrintProfile = useMemo(() => ({
+    lineWidthMm: effectiveThreeMfProfile.lineWidthMm ?? 0.42,
+    layerHeightMm: effectiveThreeMfProfile.layerHeightMm ?? 0.2,
+  }), [effectiveThreeMfProfile.layerHeightMm, effectiveThreeMfProfile.lineWidthMm])
   const activeSourceAspectRatio = useMemo(() => {
     if (sourceImage && sourceImage.width > 0 && sourceImage.height > 0) {
       return sourceImage.width / sourceImage.height
@@ -305,6 +314,8 @@ export default function Home() {
     workMode,
     workMode === 'light-relief' ? lightReliefSettings : undefined,
     sourceImageB,
+    workMode === 'string-art' ? stringArtSettings : undefined,
+    workMode === 'string-art' ? stringArtPrintProfile : undefined,
   )
 
   // 光映浮雕：从处理结果获取实际生效的 B 面模式（auto 检测后可能为 halftone）
@@ -463,12 +474,14 @@ useEffect(() => {
     return getPreviewUrlForMode(previewMode, effectiveArtwork, activeEntry)
   }, [activeEntry, effectiveArtwork, previewMode])
 
-  const workflowItems = [
-    '批量导入图片、GIF 帧或 DXF 线稿',
-    '调节线稿细节、清理杂点与平滑',
-    '选择底板模板并自动居中排版',
-    '按单个或批量方式导出 3MF / DXF / SVG',
-  ]
+  const workflowItems = workMode === 'string-art'
+    ? ['导入明暗清晰的图片', '调整圆墙、圆周连接点与绕线数量', '查看连续绕线和 3D 几何预览', '导出可切片的弦丝画 3MF']
+    : [
+      '批量导入图片、GIF 帧或 DXF 线稿',
+      '调节线稿细节、清理杂点与平滑',
+      '选择底板模板并自动居中排版',
+      '按单个或批量方式导出 3MF / DXF / SVG',
+    ]
 
   const exportBaseName = getExportBaseName(activeEntry?.label, 'lineart-baseplate')
   const canExport = Boolean(effectiveArtwork && activeEntry)
@@ -562,7 +575,16 @@ useEffect(() => {
 
       const processedArtwork = entry.id === activeEntry?.id && artwork
         ? artwork
-        : workMode === 'light-relief'
+        : workMode === 'string-art'
+          ? entry.sourceImage
+            ? await processStringArtArtwork(
+              entry.sourceImage,
+              stringArtSettings,
+              effectiveThreeMfProfile.lineWidthMm ?? 0.42,
+              effectiveThreeMfProfile.layerHeightMm ?? 0.2,
+            )
+            : (() => { throw new Error('弦丝画模式只支持图片，不支持 DXF。') })()
+          : workMode === 'light-relief'
           ? await processLightReliefArtwork({
               sourceImage: entry.sourceImage,
               importedLineart: entry.importedLineart,
@@ -617,7 +639,7 @@ useEffect(() => {
 
       setExportProgress({ current: entries.length, total: entries.length, label: '正在生成 3MF 文件...' })
 
-      if (mode === 'single' && workMode !== 'light-relief') {
+      if (mode === 'single' && workMode !== 'light-relief' && workMode !== 'string-art') {
         const bytes = buildCombined3mfPackage(
           processedItems.map((item) => ({
             id: item.entry.id,
@@ -712,7 +734,7 @@ useEffect(() => {
       for (const [index, item] of processedItems.entries()) {
         const baseName = buildNumberedBaseName(item.entry, index)
         if (format === 'dxf') {
-          archiveEntries[`${baseName}-lineart.dxf`] = strToU8(buildLoopDxf(item.artwork.lineLoops, 'LINEART'))
+          archiveEntries[`${baseName}-lineart.dxf`] = strToU8(buildStringArtDxfDocument(item.artwork))
           continue
         }
         if (format === 'svg') {
@@ -1039,14 +1061,14 @@ useEffect(() => {
           </div>
 
           <div className="space-y-6">
-            <PalettePanel
+            {workMode !== 'string-art' && <PalettePanel
               settings={baseplateSettings}
               sourceAspectRatio={activeSourceAspectRatio}
               printBedSettings={printBedSettings}
               onUpdateSettings={updateBaseplateSettings}
               presets={workMode === 'light-relief' ? LIGHT_RELIEF_PRESETS : undefined}
               onApplyPreset={workMode === 'light-relief' ? handleApplyPreset : undefined}
-            />
+            />}
             {workMode === 'seal' ? (
               <SealPanel
                 settings={sealSettings}
@@ -1060,6 +1082,12 @@ useEffect(() => {
                 onUpdateSettings={updateLightReliefSettings}
                 onUploadImageB={(file) => void handleUploadImageB(file)}
                 onClearSourceB={handleClearSourceB}
+              />
+            ) : workMode === 'string-art' ? (
+              <StringArtPanel
+                settings={stringArtSettings}
+                layerHeightMm={stringArtPrintProfile.layerHeightMm}
+                onUpdateSettings={updateStringArtSettings}
               />
             ) : (
               <ThicknessPanel
@@ -1098,6 +1126,7 @@ useEffect(() => {
             />
             <ExportPanel
               stats={effectiveArtwork?.stats ?? null}
+              workMode={workMode}
               batchCount={entries.length}
               canExport={canExport && !exporting}
               onExportJson={() => void exportBatchFiles('json')}
@@ -1389,7 +1418,7 @@ async function exportSingleFile(
   if (format === 'dxf') {
     triggerBlobDownload(
       `${baseName}-lineart.dxf`,
-      new Blob([buildLoopDxf(artwork.lineLoops, 'LINEART')], { type: 'application/dxf;charset=utf-8' }),
+      new Blob([buildStringArtDxfDocument(artwork)], { type: 'application/dxf;charset=utf-8' }),
     )
     return
   }
@@ -1416,6 +1445,7 @@ async function exportSingleFile(
     new Blob([await dataUrlToU8(previewAsset.url)], { type: previewAsset.mimeType }),
   )
 }
+
 
 function buildProjectPayload(entry: BatchSourceItem, artwork: ProcessedArtwork) {
   const state = useGeneratorStore.getState()

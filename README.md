@@ -11,6 +11,7 @@
   - **掐丝（filigree）**：传统掐丝珐琅工艺底板
   - **印章（seal）**：印章刻制
   - **光映浮雕（light-relief）**：灰度高度图浮雕，免支撑可打印形态
+  - **弦丝画（string-art）**：将图片转换为无底板、无锚钉的圆墙与多层直线弦丝 `3MF`；弦线使用薄矩形棱柱结构，便于切片器生成直线路径
 - 自动生成轮廓底板，支持矩形、圆形和轮廓模板
 - 调整底板厚度、线稿高度、线稿厚度
 - 导出 `3MF`，并拆分为底板与线稿两个部件
@@ -65,3 +66,10 @@ npm test        # vitest 单元测试
 
 > `src/utils/smoothingCompare.test.ts` 默认 `it.skip`（单次运行 6~7 分钟的调优对比手册），
 > 需要时把 `it.skip` 改回 `it` 单独运行；`realImageLineDebug.test.ts` 同理为调试工具。
+
+## 弦丝画算法来源
+
+- 虚拟圆周连接点的等角布置直接改编自 [omar-abdelgawad/string-art-app](https://github.com/omar-abdelgawad/string-art-app) 的 MIT 许可实现（Copyright 2024 Omar Abdelgawad）。
+- 残差贪心选弦策略参考 [neumann-mlucas/StringArt.jl](https://github.com/neumann-mlucas/StringArt.jl) 的 MIT 许可实现（Copyright 2023 neumann-mlucas），并适配为浏览器端灰度栅格算法。
+
+弦丝画模式默认圆圈半径为 `60 mm`、弦丝层数为 `14`，最高可设为 `50` 层。层数越多，算法可容纳的互不相交且间距足够的弦段越多，图像细节越好。同层弦段不允许交叉、共享端点或靠近到 `2.5` 条线宽以内。线宽和层高直接读取当前 3MF 打印配置的 `line_width` 与 `layer_height`；圆墙自动使用约 4 条喷嘴线的厚度。每根弦的端点会穿入圆墙外半部，并与圆墙重叠至少约三条线宽，避免生成悬空端。底层和顶层增高默认各为 `0.5 mm`，模型高度自动计算为 `底层增高 + 层数 × 层高 + 顶层增高`。参考模型使用 Arachne 墙生成器；本项目的每根弦同样采用 8 顶点薄矩形棱柱，并与圆圈墙放入同一 3MF 模型，避免胶囊端头导致切片器生成环绕路径。

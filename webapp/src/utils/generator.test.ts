@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BaseplateSettings, LightReliefSettings, LineartSettings, PrintBedSettings, ProcessedArtwork, VectorLoop } from '@/types/generator'
-import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildExportLineMask, buildLoopDxf, buildLightReliefPreviewModelGltfBlob, buildPreviewModelGltfBlob, chooseCombinedExportPixelsPerMm, chooseSingleExportPixelsPerMm, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText, planPrintBedLayout, processArtwork } from '@/utils/generator'
+import { build3mfModelXml, build3mfPackage, buildCombined3mfPackage, buildExportLineMask, buildLineartSvgDocument, buildLoopDxf, buildStringArtDxfDocument, buildLightReliefPreviewModelGltfBlob, buildPreviewModelGltfBlob, chooseCombinedExportPixelsPerMm, chooseSingleExportPixelsPerMm, layoutLineLoops, mirrorLoopsHorizontally, parseDxfText, planPrintBedLayout, processArtwork } from '@/utils/generator'
 import { unzipSync, strFromU8 } from 'fflate'
 
 const sourceLoops: VectorLoop[] = [
@@ -582,6 +582,54 @@ describe('generator exports', () => {
     expect(modelXml).toContain('x="118"')
     expect(modelXml).toContain('y="123"')
   })
+
+  it('exports string art as thin printable strands and ordered vector paths', async () => {
+    const artwork = {
+      sourceKind: 'image' as const,
+      sourceWidth: 20,
+      sourceHeight: 20,
+      lineLoops: [],
+      baseLoops: sourceLoops,
+      boardWidthMm: 20,
+      boardHeightMm: 10,
+      pixelsPerMm: 8,
+      stringArt: {
+        anchors: [{ x: 2, y: 2 }, { x: 18, y: 2 }, { x: 10, y: 8 }],
+        chords: [[0, 1], [1, 2], [2, 0]] as Array<[number, number]>,
+        layerChordCounts: [1, 1, 1],
+        settings: { radiusMm: 8, layerCount: 3, edgeHeightMm: 0.5 },
+        strandWidthMm: 0.42,
+        layerHeightMm: 0.2,
+      },
+      previews: { lineartDataUrl: '', baseplateDataUrl: '', compositeDataUrl: '' },
+      stats: { sourceKind: 'image' as const, sourceWidth: 20, sourceHeight: 20, lineLoopCount: 3, baseLoopCount: 1, lineSegments: 3, baseSegments: 4, boardWidthMm: 20, boardHeightMm: 10 },
+    }
+    const packageBytes = await build3mfPackage(artwork, rectangleSettings, { baseThicknessMm: 1.2, lineThicknessMm: 0.2, lineHeightMm: 0.2, minLineWidthMm: 0.24 }, printBedSettings)
+    const packageFiles = unzipSync(packageBytes)
+    const modelXml = strFromU8(packageFiles['3D/3dmodel.model'])
+
+    expect(modelXml).toContain('z="0.5"')
+    expect(modelXml).toContain('z="0.7"')
+    expect(modelXml).toContain('z="1.6"')
+    expect(modelXml).toContain('Title">弦丝画 3MF')
+    expect(modelXml).not.toContain('object id="3"')
+    const projectSettings = JSON.parse(strFromU8(packageFiles['Metadata/project_settings.config']))
+    expect(projectSettings).toMatchObject({
+      wall_generator: 'arachne',
+      detect_thin_wall: '0',
+      bridge_no_support: '0',
+    })
+    expect(projectSettings.filament_colour).toEqual(['#111111'])
+    expect(projectSettings.filament_multi_colour).toEqual(['#111111'])
+    expect(projectSettings.extruder_colour).toEqual(['#111111'])
+    expect(projectSettings.filament_type).toHaveLength(1)
+    expect(JSON.parse(strFromU8(packageFiles['Metadata/filament_sequence.json']))).toEqual({
+      plate_1: { nozzle_sequence: [], optimal_assignment: [], sequence: [] },
+    })
+    expect(buildLineartSvgDocument(artwork, rectangleSettings)).toContain('id="strings"')
+    expect(buildStringArtDxfDocument(artwork)).toContain('\nLINE\n')
+  })
+
 
   it('embeds composite preview as plate thumbnail when available', async () => {
     // 1x1 transparent PNG, base64

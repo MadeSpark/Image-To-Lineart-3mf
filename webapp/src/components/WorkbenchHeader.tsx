@@ -1,4 +1,4 @@
-import { ChevronDown, Download, FileArchive, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Sun, Upload, Settings2, MoreHorizontal, Eye } from 'lucide-react'
+import { ChevronDown, Download, FileArchive, GitBranch, ImageUp, Layers3, RotateCcw, Shapes, Stamp, Sun, Upload, Settings2, MoreHorizontal, Eye } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { WorkMode } from '@/types/generator'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,7 @@ const workModes: Array<{ value: WorkMode; label: string; icon: typeof Layers3 }>
   { value: 'filigree', label: '掐丝', icon: Layers3 },
   { value: 'seal', label: '印章', icon: Stamp },
   { value: 'light-relief', label: '光映浮雕', icon: Sun },
+  { value: 'string-art', label: '弦丝画(开发中)', icon: GitBranch },
 ]
 
 export function WorkbenchHeader({

@@ -1,5 +1,5 @@
 import { BarChart3, FileArchive, FileCode2, FileJson2, ImageDown, Layers3, Shapes } from 'lucide-react'
-import type { GeometryStats } from '@/types/generator'
+import type { GeometryStats, WorkMode } from '@/types/generator'
 
 interface ExportPanelProps {
   stats: GeometryStats | null
@@ -10,6 +10,7 @@ interface ExportPanelProps {
   onExportDxf: () => void
   onExport3mf: () => void
   canExport: boolean
+  workMode?: WorkMode
 }
 
 export function ExportPanel({
@@ -21,10 +22,11 @@ export function ExportPanel({
   onExportDxf,
   onExport3mf,
   canExport,
+  workMode,
 }: ExportPanelProps) {
   const items = [
-    { label: '线稿轮廓', value: stats?.lineLoopCount ?? 0 },
-    { label: '底板轮廓', value: stats?.baseLoopCount ?? 0 },
+    { label: workMode === 'string-art' ? '连续弦段' : '线稿轮廓', value: stats?.lineLoopCount ?? 0 },
+    { label: workMode === 'string-art' ? '圆圈墙轮廓' : '底板轮廓', value: stats?.baseLoopCount ?? 0 },
     { label: '线稿节点', value: stats?.lineSegments ?? 0 },
     {
       label: '画板尺寸',
@@ -56,11 +58,11 @@ export function ExportPanel({
           当前输出内容
         </div>
         <ul className="mt-3 space-y-2 text-xs leading-6 text-slate-500">
-          <li>1. `3MF`：底板与线稿独立对象，可在切片软件里分别指定颜色/耗材</li>
-          <li>2. `DXF`：线稿闭合轮廓，便于手动回 CAD 或 3D 软件修改</li>
-          <li>3. `SVG`：底板与线稿双图层平面稿</li>
-          <li>4. `JSON`：保存当前参数工程</li>
-          <li>5. `PNG`：保存当前可视化预览</li>
+          <li>1. `3MF`：{workMode === 'string-art' ? '圆圈墙与直角薄棱柱弦线，交给 Arachne 生成直线路径' : '底板与线稿独立对象，可在切片软件里分别指定颜色/耗材'}</li>
+          <li>{workMode === 'string-art' ? '2' : '2'}. `DXF`：{workMode === 'string-art' ? '按连续绕线顺序输出的弦段' : '线稿闭合轮廓，便于手动回 CAD 或 3D 软件修改'}</li>
+          <li>{workMode === 'string-art' ? '3' : '3'}. `SVG`：{workMode === 'string-art' ? '圆圈墙与弦线双图层绕线图' : '底板与线稿双图层平面稿'}</li>
+          <li>{workMode === 'string-art' ? '4' : '4'}. `JSON`：保存当前参数工程</li>
+          <li>{workMode === 'string-art' ? '5' : '5'}. `PNG`：保存当前可视化预览</li>
         </ul>
       </div>
 
@@ -72,7 +74,7 @@ export function ExportPanel({
           className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#0088ff] px-4 py-3 text-sm font-medium text-white shadow-[0_14px_32px_rgba(0,136,255,0.28)] transition enabled:hover:bg-[#0077e0] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <FileArchive className="h-4 w-4" />
-          导出 3MF
+          {workMode === 'string-art' ? '导出弦丝画 3MF' : '导出 3MF'}
         </button>
         <button
           type="button"
@@ -118,7 +120,9 @@ export function ExportPanel({
           导入切片软件前的提醒
         </div>
         <p className="mt-2 leading-6">
-          导入 3MF 后，优先检查是否看到两个独立对象。如果切片软件把它们当成两个部分显示，就可以分别给底板和线稿分配耗材。
+          {workMode === 'string-art'
+            ? '弦线使用与示例模型相同的薄矩形棱柱结构，并与圆圈墙放在同一 3MF 模型中。切片时请启用 Arachne 墙生成器和桥接/悬空线相关设置。'
+            : '导入 3MF 后，优先检查是否看到两个独立对象。如果切片软件把它们当成两个部分显示，就可以分别给底板和线稿分配耗材。'}
         </p>
       </div>
     </section>

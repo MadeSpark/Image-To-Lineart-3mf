@@ -10,6 +10,7 @@ import type {
   PreviewMode,
   ProcessedArtwork,
   SealSettings,
+  StringArtData,
   SourceImage,
   VectorLoop,
   VectorPoint,
@@ -179,7 +180,7 @@ export function PreviewCanvas({
   )
   const hasPreviewContent = Boolean(vectorScene)
   const effectiveHasPreviewContent = isThreeDimensionalPreview ? Boolean(artwork) : hasPreviewContent
-  const canEditLineart = previewMode === '线稿' && Boolean(vectorScene) && !processing
+  const canEditLineart = previewMode === '线稿' && Boolean(vectorScene) && !processing && workMode !== 'string-art'
   const brushCursorOverlay = useMemo(() => {
     if (!canEditLineart || !brushCursorPoint || lineartTool === 'pan' || isRightPanning || !vectorViewBox) {
       return null
@@ -767,6 +768,15 @@ function rgbToHex(r: number, g: number, b: number) {
   return `#${[r, g, b].map((value) => value.toString(16).padStart(2, '0')).join('')}`
 }
 
+function buildStringArtPath(art: StringArtData) {
+  return art.chords.map(([fromIndex, toIndex]) => {
+    const from = art.anchors[fromIndex]
+    const to = art.anchors[toIndex]
+    return from && to ? `M ${from.x} ${from.y} L ${to.x} ${to.y}` : ''
+  }).join(' ')
+}
+
+
 function buildVectorPreviewScene(
   artwork: ProcessedArtwork | null,
   sourceImage: SourceImage | null,
@@ -811,6 +821,13 @@ function buildVectorPreviewScene(
     // Render the source image in the same scene coordinates as vector previews
     // so zoom/pan stay stable when switching modes.
   } else if (previewMode === '线稿' && artwork) {
+    if (artwork.stringArt) {
+      layers.push({
+        id: 'string-art-strings', fill: 'none', stroke: baseplateSettings.lineColor,
+        strokeWidth: artwork.stringArt.strandWidthMm, strokeLinecap: 'round', path: buildStringArtPath(artwork.stringArt),
+      })
+      return { viewWidth, viewHeight, imageLayer, layers }
+    }
     layers.push({
       id: 'lineart',
       fill: baseplateSettings.lineColor,
@@ -837,6 +854,9 @@ function buildVectorPreviewScene(
       fill: baseplateSettings.baseColor,
       path: loopsToSvgPath(artwork.baseLoops),
     })
+    if (artwork.stringArt) {
+      layers.push({ id: 'string-art-strings-ghost', fill: 'none', stroke: baseplateSettings.lineColor, opacity: 0.45, strokeWidth: artwork.stringArt.strandWidthMm, strokeLinecap: 'round', path: buildStringArtPath(artwork.stringArt) })
+    }
     layers.push({
       id: 'lineart-ghost',
       fill: baseplateSettings.lineColor,
@@ -920,11 +940,15 @@ function buildVectorPreviewScene(
       fill: baseplateSettings.baseColor,
       path: loopsToSvgPath(artwork.baseLoops),
     })
-    layers.push({
-      id: 'lineart',
-      fill: baseplateSettings.lineColor,
-      path: loopsToSvgPath(artwork.lineLoops),
-    })
+    if (artwork.stringArt) {
+      layers.push({ id: 'string-art-strings', fill: 'none', stroke: baseplateSettings.lineColor, strokeWidth: artwork.stringArt.strandWidthMm, strokeLinecap: 'round', path: buildStringArtPath(artwork.stringArt) })
+    } else {
+      layers.push({
+        id: 'lineart',
+        fill: baseplateSettings.lineColor,
+        path: loopsToSvgPath(artwork.lineLoops),
+      })
+    }
     if (artwork.strokeLoops?.length) {
       layers.push({
         id: 'stroke',

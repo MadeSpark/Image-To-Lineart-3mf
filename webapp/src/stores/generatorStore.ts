@@ -9,6 +9,7 @@ import type {
   PrintBedSettings,
   PreviewMode,
   SealSettings,
+  StringArtSettings,
   SourceImage,
   ThreeMfTemplateProfile,
   WorkMode,
@@ -17,16 +18,17 @@ import type {
 const FILIGREE_STORAGE_KEY = 'lineart-baseplate-generator-settings-filigree'
 const SEAL_STORAGE_KEY = 'lineart-baseplate-generator-settings-seal'
 const LIGHT_RELIEF_STORAGE_KEY = 'lineart-baseplate-generator-settings-light-relief'
+const STRING_ART_STORAGE_KEY = 'lineart-baseplate-generator-settings-string-art'
 const SHARED_STORAGE_KEY = 'lineart-baseplate-generator-settings-shared'
 const DEFAULT_PREVIEW_MODE: PreviewMode = '分层预览'
 const PREVIEW_MODES: PreviewMode[] = ['原图', '线稿', 'DXF预览', '底板预览', '分层预览', '3D预览']
 
 // 设置快照 schema 版本：用于一次性迁移历史 localStorage 快照。
 const SCHEMA_VERSION_KEY = 'lineart-baseplate-generator-settings-schema-version'
-const SETTINGS_SCHEMA_VERSION = 6
+const SETTINGS_SCHEMA_VERSION = 7
 // 旧版线条平滑默认值。迁移时若快照仍为此值，视作"用户未修改过"，回落到新默认值。
 const LEGACY_SMOOTHING_DEFAULT = 36
-const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY] as const
+const MODE_STORAGE_KEYS = [FILIGREE_STORAGE_KEY, SEAL_STORAGE_KEY, LIGHT_RELIEF_STORAGE_KEY, STRING_ART_STORAGE_KEY] as const
 
 export const defaultLineartSettings: LineartSettings = {
   detail: 100,
@@ -149,6 +151,24 @@ export const defaultLightReliefSettings: LightReliefSettings = {
   bFaceInvert: false,
 }
 
+export const defaultStringArtSettings: StringArtSettings = {
+  radiusMm: 60,
+  layerCount: 14,
+  edgeHeightMm: 0.5,
+}
+
+export const defaultStringArtBaseplateSettings: BaseplateSettings = {
+  ...defaultBaseplateSettings,
+  template: 'circle',
+  diameterMm: 124,
+  marginMm: 5,
+}
+
+export const defaultStringArtExtrudeSettings: ExtrudeSettings = {
+  ...defaultExtrudeSettings,
+  baseThicknessMm: 0,
+}
+
 // 三种模式的配置完全独立，各存一份完整快照（含打印盘尺寸/间距）。
 // 唯一跨模式共享的是 3MF 输出配置（打印机/耗材/工艺模板），见 SharedSettings。
 interface FiligreeModeSettings {
@@ -173,6 +193,13 @@ interface LightReliefModeSettings {
   printBedSettings: PrintBedSettings
 }
 
+interface StringArtModeSettings {
+  baseplateSettings: BaseplateSettings
+  extrudeSettings: ExtrudeSettings
+  stringArtSettings: StringArtSettings
+  printBedSettings: PrintBedSettings
+}
+
 interface SharedSettings {
   customThreeMfProfile: ThreeMfTemplateProfile | null
 }
@@ -190,6 +217,7 @@ interface GeneratorState {
   numberingSettings: NumberingSettings
   sealSettings: SealSettings
   lightReliefSettings: LightReliefSettings
+  stringArtSettings: StringArtSettings
   printBedSettings: PrintBedSettings
   customThreeMfProfile: ThreeMfTemplateProfile | null
   setSourceImage: (sourceImage: SourceImage | null) => void
@@ -204,6 +232,7 @@ interface GeneratorState {
   updateNumberingSettings: (patch: Partial<NumberingSettings>) => void
   updateSealSettings: (patch: Partial<SealSettings>) => void
   updateLightReliefSettings: (patch: Partial<LightReliefSettings>) => void
+  updateStringArtSettings: (patch: Partial<StringArtSettings>) => void
   setCustomThreeMfProfile: (profile: ThreeMfTemplateProfile | null) => void
   applyImportedSettings: (settings: GeneratorSettingsPatch) => void
   resetAllSettings: (defaultBedPatch?: Partial<PrintBedSettings>) => void
@@ -217,6 +246,7 @@ export interface PersistedGeneratorSettings {
   numberingSettings?: NumberingSettings
   sealSettings?: SealSettings
   lightReliefSettings?: LightReliefSettings
+  stringArtSettings?: StringArtSettings
   customThreeMfProfile?: ThreeMfTemplateProfile | null
   workMode?: WorkMode
 }
@@ -234,6 +264,7 @@ export interface GeneratorSettingsPatch {
   numberingSettings?: Partial<NumberingSettings>
   sealSettings?: Partial<SealSettings>
   lightReliefSettings?: Partial<LightReliefSettings>
+  stringArtSettings?: Partial<StringArtSettings>
   customThreeMfProfile?: ThreeMfTemplateProfile | null
   workMode?: WorkMode
 }
@@ -302,6 +333,23 @@ function normalizeLightReliefSettings(parsed: Partial<LightReliefModeSettings>):
   }
 }
 
+function normalizeStringArtSettings(parsed: Partial<StringArtModeSettings>): StringArtModeSettings {
+  return {
+    baseplateSettings: { ...defaultStringArtBaseplateSettings, ...parsed.baseplateSettings },
+    extrudeSettings: { ...defaultStringArtExtrudeSettings, ...parsed.extrudeSettings },
+    stringArtSettings: sanitizeStringArtSettings({ ...defaultStringArtSettings, ...parsed.stringArtSettings }),
+    printBedSettings: { ...defaultPrintBedSettings, ...parsed.printBedSettings },
+  }
+}
+
+function sanitizeStringArtSettings(settings: StringArtSettings): StringArtSettings {
+  return {
+    radiusMm: Math.max(20, Math.min(200, settings.radiusMm)),
+    layerCount: Math.max(1, Math.min(50, Math.round(settings.layerCount))),
+    edgeHeightMm: Math.max(0.1, Math.min(3, settings.edgeHeightMm)),
+  }
+}
+
 function normalizeSharedSettings(parsed: Partial<SharedSettings>): SharedSettings {
   return {
     customThreeMfProfile: parsed.customThreeMfProfile ?? null,
@@ -339,6 +387,7 @@ function normalizePersistedSettings(parsed: GeneratorSettingsPatch) {
       ...defaultLightReliefSettings,
       ...parsed.lightReliefSettings,
     }),
+    stringArtSettings: sanitizeStringArtSettings({ ...defaultStringArtSettings, ...parsed.stringArtSettings }),
     customThreeMfProfile: parsed.customThreeMfProfile ?? null,
     workMode: parsed.workMode ?? 'filigree',
   }
@@ -353,6 +402,7 @@ export function buildPersistedSettingsSnapshot(settings: PersistedGeneratorSetti
     numberingSettings: settings.numberingSettings ?? defaultNumberingSettings,
     sealSettings: settings.sealSettings ?? defaultSealSettings,
     lightReliefSettings: settings.lightReliefSettings ?? defaultLightReliefSettings,
+    stringArtSettings: settings.stringArtSettings ?? defaultStringArtSettings,
     customThreeMfProfile: settings.customThreeMfProfile ?? null,
     workMode: settings.workMode ?? 'filigree',
   }
@@ -403,6 +453,15 @@ function loadLightReliefSettings(): LightReliefModeSettings {
 
 function saveLightReliefSettings(settings: LightReliefModeSettings) {
   saveJson(LIGHT_RELIEF_STORAGE_KEY, settings)
+}
+
+function loadStringArtSettings(): StringArtModeSettings {
+  const stored = loadJson<Partial<StringArtModeSettings>>(STRING_ART_STORAGE_KEY)
+  return normalizeStringArtSettings(stored ?? {})
+}
+
+function saveStringArtSettings(settings: StringArtModeSettings) {
+  saveJson(STRING_ART_STORAGE_KEY, settings)
 }
 
 function loadSharedSettings(): SharedSettings {
@@ -533,11 +592,18 @@ function saveCurrentModeSettings(state: GeneratorState) {
       sealSettings: state.sealSettings,
       printBedSettings: state.printBedSettings,
     })
-  } else {
+  } else if (state.workMode === 'light-relief') {
     saveLightReliefSettings({
       lineartSettings: state.lineartSettings,
       baseplateSettings: state.baseplateSettings,
       lightReliefSettings: state.lightReliefSettings,
+      printBedSettings: state.printBedSettings,
+    })
+  } else {
+    saveStringArtSettings({
+      baseplateSettings: state.baseplateSettings,
+      extrudeSettings: state.extrudeSettings,
+      stringArtSettings: state.stringArtSettings,
       printBedSettings: state.printBedSettings,
     })
   }
@@ -551,6 +617,7 @@ migrateStoredSettings()
 const storedFiligree = loadFiligreeSettings()
 const storedSeal = loadSealSettings()
 const storedLightRelief = loadLightReliefSettings()
+const storedStringArt = loadStringArtSettings()
 const storedShared = loadSharedSettings()
 
 export const useGeneratorStore = create<GeneratorState>((set, get) => ({
@@ -565,6 +632,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   numberingSettings: storedFiligree.numberingSettings,
   sealSettings: storedSeal.sealSettings,
   lightReliefSettings: storedLightRelief.lightReliefSettings,
+  stringArtSettings: storedStringArt.stringArtSettings,
   printBedSettings: storedFiligree.printBedSettings,
   customThreeMfProfile: storedShared.customThreeMfProfile,
 
@@ -597,7 +665,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         sealSettings: seal.sealSettings,
         printBedSettings: seal.printBedSettings,
       })
-    } else {
+    } else if (mode === 'light-relief') {
       const lightRelief = loadLightReliefSettings()
       set({
         workMode: 'light-relief',
@@ -605,6 +673,15 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         baseplateSettings: lightRelief.baseplateSettings,
         lightReliefSettings: lightRelief.lightReliefSettings,
         printBedSettings: lightRelief.printBedSettings,
+      })
+    } else {
+      const stringArt = loadStringArtSettings()
+      set({
+        workMode: 'string-art',
+        baseplateSettings: stringArt.baseplateSettings,
+        extrudeSettings: stringArt.extrudeSettings,
+        stringArtSettings: stringArt.stringArtSettings,
+        printBedSettings: stringArt.printBedSettings,
       })
     }
   },
@@ -663,6 +740,13 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     return { lightReliefSettings }
   }),
 
+  updateStringArtSettings: (patch) => set((state) => {
+    const stringArtSettings = sanitizeStringArtSettings({ ...state.stringArtSettings, ...patch })
+    const next = { ...state, stringArtSettings }
+    saveCurrentModeSettings(next)
+    return { stringArtSettings }
+  }),
+
   setCustomThreeMfProfile: (customThreeMfProfile) => {
     saveSharedSettings({ customThreeMfProfile })
     set({ customThreeMfProfile })
@@ -712,7 +796,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lightReliefSettings: state.lightReliefSettings,
         customThreeMfProfile: normalized.customThreeMfProfile,
       }))
-    } else {
+    } else if (targetMode === 'light-relief') {
       const lightRelief = loadLightReliefSettings()
       saveLightReliefSettings({
         lineartSettings: normalized.lineartSettings,
@@ -728,6 +812,24 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         printBedSettings: normalized.printBedSettings,
         sealSettings: state.sealSettings,
         lightReliefSettings: normalized.lightReliefSettings,
+        customThreeMfProfile: normalized.customThreeMfProfile,
+      }))
+    } else {
+      saveStringArtSettings({
+        baseplateSettings: normalized.baseplateSettings,
+        extrudeSettings: normalized.extrudeSettings,
+        stringArtSettings: normalized.stringArtSettings,
+        printBedSettings: normalized.printBedSettings,
+      })
+      set((state) => ({
+        workMode: 'string-art',
+        previewMode: isPreviewMode(settings.previewMode) ? settings.previewMode : state.previewMode,
+        baseplateSettings: normalized.baseplateSettings,
+        extrudeSettings: normalized.extrudeSettings,
+        stringArtSettings: normalized.stringArtSettings,
+        printBedSettings: normalized.printBedSettings,
+        sealSettings: state.sealSettings,
+        lightReliefSettings: state.lightReliefSettings,
         customThreeMfProfile: normalized.customThreeMfProfile,
       }))
     }
@@ -779,7 +881,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         printBedSettings,
         customThreeMfProfile: null,
       })
-    } else {
+    } else if (currentMode === 'light-relief') {
       saveLightReliefSettings({
         lineartSettings: defaultLightReliefLineartSettings,
         baseplateSettings: defaultLightReliefBaseplateSettings,
@@ -792,6 +894,22 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         lineartSettings: defaultLightReliefLineartSettings,
         baseplateSettings: defaultLightReliefBaseplateSettings,
         lightReliefSettings: defaultLightReliefSettings,
+        printBedSettings,
+        customThreeMfProfile: null,
+      })
+    } else {
+      saveStringArtSettings({
+        baseplateSettings: defaultStringArtBaseplateSettings,
+        extrudeSettings: defaultStringArtExtrudeSettings,
+        stringArtSettings: defaultStringArtSettings,
+        printBedSettings,
+      })
+      set({
+        workMode: 'string-art',
+        previewMode: DEFAULT_PREVIEW_MODE,
+        baseplateSettings: defaultStringArtBaseplateSettings,
+        extrudeSettings: defaultStringArtExtrudeSettings,
+        stringArtSettings: defaultStringArtSettings,
         printBedSettings,
         customThreeMfProfile: null,
       })

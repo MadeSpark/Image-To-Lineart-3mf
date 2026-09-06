@@ -134,10 +134,13 @@ export function ThreeDModelViewer({
   const viewerRef = useRef<HTMLElement | null>(null)
   const isSealMode = workMode === 'seal' && sealSettings
   const isLightReliefMode = workMode === 'light-relief' && lightReliefSettings
+  const isStringArtMode = workMode === 'string-art' && artwork.stringArt
   const modelHeight = isSealMode
     ? (sealSettings!.sealHeightMm + sealSettings!.engravingHeightDiffMm)
     : isLightReliefMode
       ? lightReliefSettings!.totalHeightMm
+      : isStringArtMode
+        ? artwork.stringArt!.settings.edgeHeightMm * 2 + artwork.stringArt!.settings.layerCount * artwork.stringArt!.layerHeightMm
       : (extrudeSettings.lineHeightMm + extrudeSettings.lineThicknessMm)
   const cameraTarget = `0m ${Math.max(modelHeight * 0.5, 0.25)}m 0m`
 
@@ -203,6 +206,7 @@ export function ThreeDModelViewer({
           lineLoops: artwork.lineLoops,
           lineLoopsB: artwork.lineLoopsB,
           strokeLoops: artwork.strokeLoops,
+          stringArt: artwork.stringArt,
           boardWidthMm: artwork.boardWidthMm,
           boardHeightMm: artwork.boardHeightMm,
           pixelsPerMm: artwork.pixelsPerMm,

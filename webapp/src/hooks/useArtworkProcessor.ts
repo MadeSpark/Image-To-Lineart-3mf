@@ -7,10 +7,12 @@ import type {
   LineartSettings,
   ProcessedArtwork,
   SealSettings,
+  StringArtSettings,
   SourceImage,
   WorkMode,
 } from '@/types/generator'
 import { processArtwork, processLightReliefArtwork } from '@/utils/generator'
+import { processStringArtArtwork } from '@/utils/stringArt'
 
 interface ProcessorState {
   artwork: ProcessedArtwork | null
@@ -28,6 +30,8 @@ export function useArtworkProcessor(
   workMode?: WorkMode,
   lightReliefSettings?: LightReliefSettings,
   sourceImageB?: SourceImage | null,
+  stringArtSettings?: StringArtSettings,
+  stringArtPrintProfile?: { lineWidthMm: number; layerHeightMm: number },
 ) {
   const [state, setState] = useState<ProcessorState>({
     artwork: null,
@@ -44,6 +48,8 @@ export function useArtworkProcessor(
     sealSettings,
     workMode,
     lightReliefSettings,
+    stringArtSettings,
+    stringArtPrintProfile,
   })
 
   useEffect(() => {
@@ -57,8 +63,10 @@ export function useArtworkProcessor(
       sealSettings,
       workMode,
       lightReliefSettings,
+      stringArtSettings,
+      stringArtPrintProfile,
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings, stringArtSettings, stringArtPrintProfile])
 
   useEffect(() => {
     let mounted = true
@@ -81,7 +89,11 @@ export function useArtworkProcessor(
       error: null,
     }))
 
-    const promise = workMode === 'light-relief' && lightReliefSettings
+    const promise = workMode === 'string-art' && stringArtSettings
+      ? sourceImage
+        ? processStringArtArtwork(sourceImage, stringArtSettings, stringArtPrintProfile?.lineWidthMm ?? 0.42, stringArtPrintProfile?.layerHeightMm ?? 0.2)
+        : Promise.reject(new Error('弦丝画模式只支持图片，不支持 DXF。'))
+      : workMode === 'light-relief' && lightReliefSettings
       ? processLightReliefArtwork({
           sourceImage: inputRef.current.sourceImage,
           importedLineart: inputRef.current.importedLineart,
@@ -113,7 +125,7 @@ export function useArtworkProcessor(
     return () => {
       mounted = false
     }
-  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings])
+  }, [baseplateSettings, extrudeSettings, importedLineart, lineartSettings, sourceImage, sourceImageB, sealSettings, workMode, lightReliefSettings, stringArtSettings, stringArtPrintProfile])
 
   return {
     artwork: state.artwork,

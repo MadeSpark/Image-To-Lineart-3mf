@@ -10,7 +10,7 @@ export type RectangleSizeMode = 'ratio' | 'manual'
  */
 export type ImagePlacement = 'fit' | 'center' | 'stretch' | 'crop'
 export type SourceKind = 'image' | 'dxf'
-export type WorkMode = 'filigree' | 'seal' | 'light-relief'
+export type WorkMode = 'filigree' | 'seal' | 'light-relief' | 'string-art'
 export type CarvingMode = 'intaglio' | 'relief'
 
 export interface SourceImage {
@@ -117,6 +117,29 @@ export interface SealSettings {
   engravingHeightDiffMm: number
 }
 
+/** 弦丝画只暴露画幅半径和弦丝层数；线宽、层高由当前打印配置决定。 */
+export interface StringArtSettings {
+  /** 圆墙中心线半径；弦线跨越该圆的内侧空间。 */
+  radiusMm: number
+  /** 每层弦丝内部不相交；增加层数可承载更多弦段。 */
+  layerCount: number
+  /** 弦丝区上下各增加的圆墙高度。 */
+  edgeHeightMm: number
+}
+
+export interface StringArtData {
+  /** 仅用于计算弦段端点的虚拟圆周连接点，不会输出为锚钉。 */
+  anchors: VectorPoint[]
+  chords: Array<[number, number]>
+  /** chords 按层顺序排列；每个数字表示对应层拥有的弦段数。 */
+  layerChordCounts: number[]
+  settings: StringArtSettings
+  /** 从当前 3MF 打印配置读取的实际出丝线宽。 */
+  strandWidthMm: number
+  /** 从当前 3MF 打印配置读取的层高；每根弦线占一个桥接层。 */
+  layerHeightMm: number
+}
+
 /**
  * 光映浮雕 B 面模式。
  * - 'auto': 自动检测——图片同时含黑(0,0,0)和红(255,0,0)时走 lineart，否则走 halftone（默认）
@@ -216,6 +239,8 @@ export interface ProcessedArtwork {
   lineLoops: VectorLoop[]
   baseLoops: VectorLoop[]
   strokeLoops?: VectorLoop[]
+  /** 弦丝画模式的连续绕线顺序；圆周点仅用于生成每根直线弦丝的端点。 */
+  stringArt?: StringArtData
   /** 光映浮雕模式下的 B 面线稿（A 面仍存于 lineLoops）。lineart 模式使用。 */
   lineLoopsB?: VectorLoop[]
   /**

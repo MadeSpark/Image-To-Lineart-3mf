@@ -6,6 +6,7 @@ import { buildLightReliefPreviewModelGltfBlob, buildPreviewModelGltfBlob, buildS
 type PreviewModelArtworkPayload = Pick<
   ProcessedArtwork,
   'baseLoops' | 'lineLoops' | 'lineLoopsB' | 'bFaceHeightMap' | 'strokeLoops' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm'
+  | 'stringArt'
 >
 
 interface BuildPreviewModelMessage {

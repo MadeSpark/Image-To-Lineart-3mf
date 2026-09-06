@@ -15,6 +15,7 @@ import type {
   ProcessedArtwork,
   PreviewAssets,
   SealSettings,
+  StringArtData,
   SourceImage,
   ThreeMfTemplateProfile,
   VectorLoop,
@@ -22,6 +23,7 @@ import type {
   WorkMode,
 } from '@/types/generator'
 import { clamp, colorDistance, hexToRgb } from './color'
+import { getStringArtWallThickness } from './stringArt'
 import {
   buildThreeMfFilamentSequenceJson,
   buildThreeMfProjectSettingsConfig,
@@ -60,7 +62,7 @@ interface MeshData {
 
 type PreviewModelArtworkInput = Pick<
   ProcessedArtwork,
-  'baseLoops' | 'lineLoops' | 'lineLoopsB' | 'bFaceHeightMap' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm'
+  'baseLoops' | 'lineLoops' | 'lineLoopsB' | 'bFaceHeightMap' | 'boardWidthMm' | 'boardHeightMm' | 'pixelsPerMm' | 'stringArt'
 >
 
 /**
@@ -1167,7 +1169,7 @@ export function exportLineartSvg(filename: string, artwork: ProcessedArtwork, se
 }
 
 export function exportLineartDxf(filename: string, artwork: ProcessedArtwork) {
-  downloadText(filename, buildLoopDxf(artwork.lineLoops, 'LINEART'), 'application/dxf;charset=utf-8')
+  downloadText(filename, buildStringArtDxfDocument(artwork), 'application/dxf;charset=utf-8')
 }
 
 export async function export3mf(
@@ -1187,6 +1189,24 @@ export async function export3mf(
 
 export function buildLineartSvgDocument(artwork: ProcessedArtwork, settings: BaseplateSettings) {
   const basePaths = loopsToSvgPath(artwork.baseLoops)
+  if (artwork.stringArt) {
+    const strings = artwork.stringArt.chords.map(([fromIndex, toIndex]) => {
+      const from = artwork.stringArt!.anchors[fromIndex]
+      const to = artwork.stringArt!.anchors[toIndex]
+      return from && to ? `    <line x1="${formatNumber(from.x)}" y1="${formatNumber(from.y)}" x2="${formatNumber(to.x)}" y2="${formatNumber(to.y)}"/>` : ''
+    }).filter(Boolean)
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${artwork.boardWidthMm}mm" height="${artwork.boardHeightMm}mm" viewBox="0 0 ${formatNumber(artwork.boardWidthMm)} ${formatNumber(artwork.boardHeightMm)}">`,
+      '  <title>弦丝画绕线图</title>',
+      '  <desc>弦线按照输出顺序连续连接圆墙；圆墙与弦线分别分层。</desc>',
+      `  <g id="baseplate" fill="${settings.baseColor}"><path d="${basePaths}" /></g>`,
+      `  <g id="strings" fill="none" stroke="${settings.lineColor}" stroke-width="${formatNumber(artwork.stringArt.strandWidthMm)}" stroke-linecap="round">`,
+      ...strings,
+      '  </g>',
+      '</svg>',
+    ].join('\n')
+  }
   const linePaths = loopsToSvgPath(artwork.lineLoops)
   const strokePaths = artwork.strokeLoops ? loopsToSvgPath(artwork.strokeLoops) : ''
 
@@ -1378,33 +1398,46 @@ export async function build3mfPackage(
   const offsetX = singlePlacement?.xMm ?? 0
   const offsetY = singlePlacement?.yMm ?? 0
   const baseMesh = translateMesh(
-    extrudeLoopsToMesh(
-      keepOuterLoops(flippedBaseLoops),
-      0,
-      extrudeSettings.baseThicknessMm,
-    ),
+    artwork.stringArt
+      ? buildStringArtWallMesh(artwork.stringArt)
+      : extrudeLoopsToMesh(
+        keepOuterLoops(flippedBaseLoops),
+        0,
+        extrudeSettings.baseThicknessMm,
+      ),
     offsetX,
     offsetY,
   )
-  await onProgress?.('正在生成线稿网格...')
+  await onProgress?.(artwork.stringArt ? '正在生成多层桥接丝线网格...' : '正在生成线稿网格...')
   const lineMesh = translateMesh(
-    extrudeMaskToMesh(
-      flippedLineLoops,
-      artwork.boardWidthMm,
-      artwork.boardHeightMm,
-      lineMeshPixelsPerMm,
-      extrudeSettings.lineHeightMm,
-      extrudeSettings.lineThicknessMm,
-      extrudeSettings.minLineWidthMm,
-      lineartSettings?.expandStrokeMm ?? 0,
-      lineartSettings?.shrinkStrokeMm ?? 0,
-    ),
+    artwork.stringArt
+      ? buildStringArtMesh(
+        flipStringArtForModelExport(artwork.stringArt, artwork.boardHeightMm),
+        0,
+      )
+      : extrudeMaskToMesh(
+        flippedLineLoops,
+        artwork.boardWidthMm,
+        artwork.boardHeightMm,
+        lineMeshPixelsPerMm,
+        extrudeSettings.lineHeightMm,
+        extrudeSettings.lineThicknessMm,
+        extrudeSettings.minLineWidthMm,
+        lineartSettings?.expandStrokeMm ?? 0,
+        lineartSettings?.shrinkStrokeMm ?? 0,
+      ),
     offsetX,
     offsetY,
   )
   await onProgress?.('正在生成 3MF XML...')
   const applicationName = threeMfProfile?.applicationName ?? 'BambuStudio-01.10.00.89'
-  const modelXml = build3mfModelXml(baseMesh, lineMesh, baseplateSettings, applicationName)
+  const modelXml = build3mfModelXml(
+    baseMesh,
+    lineMesh,
+    baseplateSettings,
+    applicationName,
+    artwork.stringArt ? { base: '圆圈墙', line: '直线弦丝', composite: '弦丝画组合' } : undefined,
+  )
   const contentTypes = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
@@ -1418,23 +1451,27 @@ export async function build3mfPackage(
     '  <Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>',
     '</Relationships>',
   ].join('\n')
-  const modelSettings = buildBambuModelSettingsConfig([
-    {
+  const modelSettings = artwork.stringArt
+    ? buildBambuModelSettingsConfig([{
+      id: 2,
+      name: '弦丝画',
+      parts: [{ id: 1, name: '圆墙与直线弦丝', extruder: 1 }],
+    }], [{ plateIndex: 0, objectIds: [2], identifyIds: [1] }])
+    : buildBambuModelSettingsConfig([{
       id: 4,
       name: '线稿底板组合',
       parts: [
         { id: 2, name: '底板', extruder: 1 },
         { id: 3, name: '线稿', extruder: 2 },
       ],
-    },
-  ], [{
-    plateIndex: 0,
-    objectIds: [4],
-    identifyIds: [1],
-  }])
-  const projectSettings = buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+    }], [{ plateIndex: 0, objectIds: [4], identifyIds: [1] }])
+  const projectSettings = artwork.stringArt
+    ? buildStringArtProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
+    : buildThreeMfProjectSettingsConfig(threeMfProfile, baseplateSettings, printBedSettings)
   const sliceInfoConfig = buildThreeMfSliceInfoConfig(threeMfProfile)
-  const filamentSequence = buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
+  const filamentSequence = artwork.stringArt
+    ? buildStringArtFilamentSequenceJson()
+    : buildThreeMfFilamentSequenceJson(threeMfProfile, 1)
   await onProgress?.('正在压缩 3MF 文件...')
 
   // 2026-08-28：把 2D 预览（composite：底板+线稿）作为 plate 缩略图嵌入 3MF。
@@ -2159,11 +2196,15 @@ export function buildPreviewModelGltfBlob(
 ) {
   const lineMeshPixelsPerMm = choosePreviewModelPixelsPerMm(artwork)
   const baseMesh = extrudeLoopsToMesh(
-    keepOuterLoops(artwork.baseLoops),
+    artwork.stringArt
+      ? []
+      : keepOuterLoops(artwork.baseLoops),
     0,
-    extrudeSettings.baseThicknessMm,
+    artwork.stringArt ? 0 : extrudeSettings.baseThicknessMm,
   )
-  const lineMesh = extrudeMaskToMesh(
+  const lineMesh = artwork.stringArt
+    ? buildStringArtMesh(artwork.stringArt, 0)
+    : extrudeMaskToMesh(
     artwork.lineLoops,
     artwork.boardWidthMm,
     artwork.boardHeightMm,
@@ -2177,7 +2218,7 @@ export function buildPreviewModelGltfBlob(
 
   return buildGltfPreviewBlob(
     [
-      { mesh: baseMesh, name: '底板', color: baseplateSettings.baseColor },
+      { mesh: artwork.stringArt ? buildStringArtWallMesh(artwork.stringArt) : baseMesh, name: artwork.stringArt ? '圆圈墙' : '底板', color: baseplateSettings.baseColor },
       { mesh: lineMesh, name: '线稿', color: baseplateSettings.lineColor },
     ],
     artwork.boardWidthMm,
@@ -2555,7 +2596,29 @@ export function build3mfModelXml(
   lineMesh: MeshData,
   settings: BaseplateSettings,
   applicationName = 'BambuStudio-01.10.00.89',
+  names: { base: string; line: string; composite: string } = { base: '底板', line: '线稿', composite: '线稿底板组合' },
 ) {
+  if (names.composite === '弦丝画组合') {
+    const combinedMesh = mergeMeshData(baseMesh, lineMesh)
+    const color = `${settings.lineColor.toUpperCase()}FF`
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">',
+      `  <metadata name="Application">${applicationName}</metadata>`,
+      '  <metadata name="Designer">线稿底板生成器</metadata>',
+      '  <metadata name="Title">弦丝画 3MF</metadata>',
+      '  <resources>',
+      '    <basematerials id="1">',
+      `      <base name="圆墙与直线弦丝" displaycolor="${color}"/>`,
+      '    </basematerials>',
+      `    ${meshTo3mfObject(combinedMesh, 2, '圆墙与直线弦丝', 0)}`,
+      '  </resources>',
+      '  <build>',
+      '    <item objectid="2"/>',
+      '  </build>',
+      '</model>',
+    ].join('\n')
+  }
   const baseColor = `${settings.baseColor.toUpperCase()}FF`
   const lineColor = `${settings.lineColor.toUpperCase()}FF`
   const baseObjectId = 2
@@ -2570,12 +2633,12 @@ export function build3mfModelXml(
     '  <metadata name="Title">线稿底板 3MF</metadata>',
     '  <resources>',
     '    <basematerials id="1">',
-    `      <base name="底板" displaycolor="${baseColor}"/>`,
-    `      <base name="线稿" displaycolor="${lineColor}"/>`,
+    `      <base name="${names.base}" displaycolor="${baseColor}"/>`,
+    `      <base name="${names.line}" displaycolor="${lineColor}"/>`,
     '    </basematerials>',
-    `    ${meshTo3mfObject(baseMesh, baseObjectId, '底板', 0)}`,
-    `    ${meshTo3mfObject(lineMesh, lineObjectId, '线稿', 1)}`,
-    `    ${build3mfCompositeObject(compositeObjectId, '线稿底板组合', [baseObjectId, lineObjectId])}`,
+    `    ${meshTo3mfObject(baseMesh, baseObjectId, names.base, 0)}`,
+    `    ${meshTo3mfObject(lineMesh, lineObjectId, names.line, 1)}`,
+    `    ${build3mfCompositeObject(compositeObjectId, names.composite, [baseObjectId, lineObjectId])}`,
     '  </resources>',
     '  <build>',
     `    <item objectid="${compositeObjectId}"/>`,
@@ -4919,6 +4982,184 @@ function extrudeLoopsToMesh(loops: VectorLoop[], zStart: number, height: number)
   })
 
   return mesh
+}
+
+function buildStringArtProjectSettingsConfig(
+  profile: ThreeMfTemplateProfile | null | undefined,
+  baseplateSettings: BaseplateSettings,
+  printBedSettings: PrintBedSettings,
+) {
+  const settings = JSON.parse(buildThreeMfProjectSettingsConfig(profile, baseplateSettings, printBedSettings)) as Record<string, unknown>
+  // The common line-art profile always creates a white background slot and a
+  // black line slot. String art has neither a backing plate nor a second part,
+  // so remove every inherited multi-filament array before Bambu reads it.
+  for (const [key, value] of Object.entries(settings)) {
+    if ((key.startsWith('filament_') || key === 'extruder_colour') && Array.isArray(value)) {
+      settings[key] = value.slice(0, 1)
+    }
+  }
+  const filamentColor = baseplateSettings.lineColor.toUpperCase()
+  settings.filament_colour = [filamentColor]
+  settings.filament_multi_colour = [filamentColor]
+  settings.extruder_colour = [filamentColor]
+  // Keep the frame-wall generator consistent with the supplied reference 3MF.
+  // Thin-wall and unsupported-bridge overrides make Bambu classify the buried
+  // strand ends as special regions instead of a continuous wall connection.
+  settings.wall_generator = 'arachne'
+  settings.detect_thin_wall = '0'
+  settings.bridge_no_support = '0'
+  return JSON.stringify(settings, null, 2)
+}
+
+function buildStringArtFilamentSequenceJson() {
+  return JSON.stringify({
+    plate_1: {
+      nozzle_sequence: [],
+      optimal_assignment: [],
+      sequence: [],
+    },
+  })
+}
+
+function mergeMeshData(first: MeshData, second: MeshData): MeshData {
+  const vertices = [...first.vertices, ...second.vertices]
+  const offset = first.vertices.length
+  return {
+    vertices,
+    triangles: [
+      ...first.triangles,
+      ...second.triangles.map(([a, b, c]) => [a + offset, b + offset, c + offset] as [number, number, number]),
+    ],
+  }
+}
+
+export function buildStringArtDxfDocument(artwork: ProcessedArtwork) {
+  if (!artwork.stringArt) return buildLoopDxf(artwork.lineLoops, 'LINEART')
+  const layer = sanitizeLayerName('STRING_ART')
+  const entities = artwork.stringArt.chords.flatMap(([fromIndex, toIndex]) => {
+    const from = artwork.stringArt!.anchors[fromIndex]
+    const to = artwork.stringArt!.anchors[toIndex]
+    if (!from || !to) return []
+    return [
+      dxfPair(0, 'LINE'), dxfPair(8, layer),
+      dxfPair(10, formatNumber(from.x)), dxfPair(20, formatNumber(from.y)),
+      dxfPair(11, formatNumber(to.x)), dxfPair(21, formatNumber(to.y)),
+    ]
+  })
+  return [...buildDxfHeader(layer), ...entities, dxfPair(0, 'ENDSEC'), dxfPair(0, 'EOF')].join('\n')
+}
+
+function buildDxfHeader(layer: string) {
+  return [
+    dxfPair(0, 'SECTION'), dxfPair(2, 'HEADER'), dxfPair(9, '$ACADVER'), dxfPair(1, 'AC1009'), dxfPair(9, '$INSUNITS'), dxfPair(70, '4'), dxfPair(0, 'ENDSEC'),
+    dxfPair(0, 'SECTION'), dxfPair(2, 'TABLES'), dxfPair(0, 'TABLE'), dxfPair(2, 'LTYPE'), dxfPair(70, '1'),
+    dxfPair(0, 'LTYPE'), dxfPair(2, 'CONTINUOUS'), dxfPair(70, '0'), dxfPair(3, 'Solid line'), dxfPair(72, '65'), dxfPair(73, '0'), dxfPair(40, '0'), dxfPair(0, 'ENDTAB'),
+    dxfPair(0, 'TABLE'), dxfPair(2, 'LAYER'), dxfPair(70, '2'),
+    dxfPair(0, 'LAYER'), dxfPair(2, '0'), dxfPair(70, '0'), dxfPair(62, '7'), dxfPair(6, 'CONTINUOUS'),
+    dxfPair(0, 'LAYER'), dxfPair(2, layer), dxfPair(70, '0'), dxfPair(62, '7'), dxfPair(6, 'CONTINUOUS'),
+    dxfPair(0, 'ENDTAB'), dxfPair(0, 'ENDSEC'), dxfPair(0, 'SECTION'), dxfPair(2, 'ENTITIES'),
+  ]
+}
+
+/** Build bridge-ready strand ribbons. Each chord is assigned to a real print layer. */
+function buildStringArtMesh(art: StringArtData, baseHeightMm: number): MeshData {
+  const mesh: MeshData = { vertices: [], triangles: [] }
+  const stringWidthMm = Math.max(0.2, art.strandWidthMm)
+  const layerHeightMm = Math.max(0.08, art.layerHeightMm)
+  let chordOffset = 0
+  for (const [layerIndex, chordCount] of art.layerChordCounts.entries()) {
+    for (const [fromIndex, toIndex] of art.chords.slice(chordOffset, chordOffset + chordCount)) {
+      const from = art.anchors[fromIndex]
+      const to = art.anchors[toIndex]
+      if (!from || !to) continue
+      const zStart = baseHeightMm + art.settings.edgeHeightMm + layerIndex * layerHeightMm
+      appendMesh(mesh, buildStringArtPrism(from, to, stringWidthMm, zStart, layerHeightMm))
+    }
+    chordOffset += chordCount
+  }
+  return mesh
+}
+
+/** A hollow circular wall: no white backing plate and no pin geometry. */
+function buildStringArtWallMesh(art: StringArtData): MeshData {
+  const mesh: MeshData = { vertices: [], triangles: [] }
+  const wallThicknessMm = getStringArtWallThickness()
+  const outerRadiusMm = art.settings.radiusMm + wallThicknessMm / 2
+  const innerRadiusMm = Math.max(0.1, art.settings.radiusMm - wallThicknessMm / 2)
+  const heightMm = art.settings.edgeHeightMm * 2 + art.settings.layerCount * Math.max(0.08, art.layerHeightMm)
+  const center = outerRadiusMm
+  // 360 segments matches the reference frame density and prevents chord ends
+  // from landing on visibly faceted, unstable wall sections.
+  const segments = 360
+  const vertexIndex = new Map<string, number>()
+  const vertex = (radius: number, step: number, z: number) => {
+    const angle = 2 * Math.PI * step / segments
+    const x = center + radius * Math.cos(angle)
+    const y = center + radius * Math.sin(angle)
+    const key = `${x.toFixed(6)},${y.toFixed(6)},${z.toFixed(6)}`
+    const existing = vertexIndex.get(key)
+    if (existing !== undefined) return existing
+    const next = mesh.vertices.length
+    mesh.vertices.push([x, y, z])
+    vertexIndex.set(key, next)
+    return next
+  }
+  const quad = (a: number, b: number, c: number, d: number) => mesh.triangles.push([a, b, c], [a, c, d])
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments
+    const outerBottomA = vertex(outerRadiusMm, index, 0)
+    const outerBottomB = vertex(outerRadiusMm, next, 0)
+    const innerBottomB = vertex(innerRadiusMm, next, 0)
+    const innerBottomA = vertex(innerRadiusMm, index, 0)
+    const outerTopA = vertex(outerRadiusMm, index, heightMm)
+    const outerTopB = vertex(outerRadiusMm, next, heightMm)
+    const innerTopB = vertex(innerRadiusMm, next, heightMm)
+    const innerTopA = vertex(innerRadiusMm, index, heightMm)
+    quad(outerBottomA, outerBottomB, innerBottomB, innerBottomA)
+    quad(outerTopA, innerTopA, innerTopB, outerTopB)
+    quad(outerBottomA, outerTopA, outerTopB, outerBottomB)
+    quad(innerBottomB, innerTopB, innerTopA, innerBottomA)
+  }
+  return mesh
+}
+
+function appendMesh(target: MeshData, source: MeshData) {
+  const offset = target.vertices.length
+  target.vertices.push(...source.vertices)
+  target.triangles.push(...source.triangles.map(([a, b, c]): [number, number, number] => [a + offset, b + offset, c + offset]))
+}
+
+/** A straight 8-vertex ribbon, matching the thin rectangular prisms used by
+ * the reference string-art 3MF. Keeping square ends avoids capsule loops that
+ * make slicers trace around each endpoint instead of producing straight pulls.
+ */
+function buildStringArtPrism(from: VectorPoint, to: VectorPoint, width: number, zStart: number, height: number): MeshData {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const length = Math.hypot(dx, dy) || 1
+  const nx = -dy / length * width / 2
+  const ny = dx / length * width / 2
+  const vertices: Array<[number, number, number]> = [
+    [from.x + nx, from.y + ny, zStart], [to.x + nx, to.y + ny, zStart],
+    [to.x - nx, to.y - ny, zStart], [from.x - nx, from.y - ny, zStart],
+    [from.x + nx, from.y + ny, zStart + height], [to.x + nx, to.y + ny, zStart + height],
+    [to.x - nx, to.y - ny, zStart + height], [from.x - nx, from.y - ny, zStart + height],
+  ]
+  return {
+    vertices,
+    triangles: [
+      [0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6],
+      [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2],
+      [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0],
+    ],
+  }
+}
+
+function flipStringArtForModelExport(art: StringArtData, boardHeightMm: number): StringArtData {
+  return {
+    ...art,
+    anchors: art.anchors.map((anchor) => ({ x: anchor.x, y: boardHeightMm - anchor.y })),
+  }
 }
 
 /**
